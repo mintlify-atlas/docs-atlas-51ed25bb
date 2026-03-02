@@ -1,0 +1,175 @@
+{
+  "projectType": "infrastructure",
+  "projectName": "NativeLink",
+  "projectDescription": "High-performance build cache and remote execution server compatible with Bazel, Buck2, and other Remote Execution API-compatible build systems.",
+  "theme": "aspen",
+  "primaryColor": "#8A2BE2",
+  "lightColor": null,
+  "darkColor": null,
+  "navigation": {
+    "tabs": [
+      {
+        "tab": "Documentation",
+        "groups": [
+          {
+            "group": "Getting Started",
+            "pages": [
+              "introduction",
+              "quickstart",
+              "installation"
+            ]
+          },
+          {
+            "group": "Core Concepts",
+            "pages": [
+              "concepts/architecture",
+              "concepts/build-cache",
+              "concepts/remote-execution",
+              "concepts/stores",
+              "concepts/schedulers",
+              "concepts/workers"
+            ]
+          },
+          {
+            "group": "Deployment",
+            "pages": [
+              "deployment/docker",
+              "deployment/kubernetes",
+              "deployment/configuration",
+              "deployment/production"
+            ]
+          },
+          {
+            "group": "Integration",
+            "pages": [
+              "integration/bazel",
+              "integration/buck2",
+              "integration/reclient",
+              "integration/other-tools"
+            ]
+          },
+          {
+            "group": "Operations",
+            "pages": [
+              "operations/monitoring",
+              "operations/metrics",
+              "operations/troubleshooting",
+              "operations/performance-tuning"
+            ]
+          },
+          {
+            "group": "Security",
+            "pages": [
+              "security/authentication",
+              "security/tls",
+              "security/best-practices"
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "Configuration",
+        "groups": [
+          {
+            "group": "Configuration Reference",
+            "pages": [
+              "config/overview",
+              "config/stores",
+              "config/schedulers",
+              "config/servers",
+              "config/workers"
+            ]
+          },
+          {
+            "group": "Examples",
+            "pages": [
+              "config/examples/basic-cas",
+              "config/examples/s3-backend",
+              "config/examples/kubernetes",
+              "config/examples/multi-worker"
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "API Reference",
+        "groups": [
+          {
+            "group": "Services",
+            "pages": [
+              "api/cas-service",
+              "api/ac-service",
+              "api/execution-service",
+              "api/bytestream-service",
+              "api/capabilities-service"
+            ]
+          },
+          {
+            "group": "Store Types",
+            "pages": [
+              "api/stores/filesystem",
+              "api/stores/memory",
+              "api/stores/s3",
+              "api/stores/fast-slow",
+              "api/stores/redis"
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "Contributing",
+        "groups": [
+          {
+            "group": "Development",
+            "pages": [
+              "contributing/overview",
+              "contributing/building-from-source",
+              "contributing/bazel",
+              "contributing/cargo",
+              "contributing/nix"
+            ]
+          },
+          {
+            "group": "Community",
+            "pages": [
+              "contributing/guidelines",
+              "contributing/code-of-conduct",
+              "contributing/support"
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "keyFeatures": [
+    "Advanced build caching with multiple storage backends",
+    "Distributed remote execution for parallel builds",
+    "Compatible with Bazel, Buck2, Reclient, and other RE-compatible tools",
+    "High-performance Rust implementation",
+    "Flexible configuration with JSON5 config files",
+    "Multiple storage backends (S3, GCS, Redis, filesystem)",
+    "Kubernetes-native with Helm chart support",
+    "Comprehensive metrics and monitoring",
+    "Production-ready handling 1B+ requests/month"
+  ],
+  "publicApiSurface": [
+    "CAS (Content Addressable Storage) Service",
+    "AC (Action Cache) Service",
+    "Execution Service",
+    "ByteStream Service",
+    "Capabilities Service",
+    "Worker API Service",
+    "Health Check API",
+    "Admin API",
+    "Filesystem Store",
+    "Memory Store",
+    "S3 Store",
+    "GCS Store",
+    "Redis Store",
+    "Fast-Slow Store",
+    "Compression Store",
+    "Dedup Store",
+    "Simple Scheduler",
+    "Property Modifier Scheduler"
+  ]
+}
