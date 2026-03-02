@@ -1,0 +1,153 @@
+---
+title: "Introduction to NativeLink"
+description: "An efficient, high-performance build cache and remote execution system that accelerates software compilation and testing"
+---
+
+## What is NativeLink?
+
+NativeLink is an efficient, high-performance build cache and remote execution system that accelerates software compilation and testing while reducing infrastructure costs. It optimizes build processes for projects of all sizes by intelligently caching build artifacts and distributing tasks across multiple machines.
+
+<Note>
+NativeLink is trusted in production environments to reduce costs and developer iteration times—handling over **one billion requests** per month for its customers, including large corporations such as **Samsung**.
+</Note>
+
+## Key features
+
+<CardGroup cols={2}>
+  <Card title="Advanced build cache" icon="box">
+    Stores and reuses results of previous build steps for unchanged components, significantly reducing build times for incremental changes.
+  </Card>
+  
+  <Card title="Efficient remote execution" icon="server">
+    Distributes build and test tasks across a network of machines, parallelizing workloads for faster completion.
+  </Card>
+  
+  <Card title="Remote resources" icon="cloud">
+    Utilizes remote resources to offload computational burden from local machines while ensuring consistency with a uniform, controlled build environment.
+  </Card>
+  
+  <Card title="Broad compatibility" icon="plug">
+    Seamlessly integrates with build tools that use the Remote Execution protocol, such as Bazel, Buck2, Goma, and Reclient.
+  </Card>
+</CardGroup>
+
+## Platform support
+
+NativeLink supports:
+
+- **Operating systems**: Unix-based systems (Linux, macOS) and Windows
+- **Build tools**: Bazel, Buck2, Goma, Reclient, and other Remote Execution API compatible tools
+- **Deployment**: Docker, Kubernetes, bare metal, and cloud platforms
+
+## Get started
+
+Choose your path to get started with NativeLink:
+
+<CardGroup cols={2}>
+  <Card title="Quickstart" icon="rocket" href="/quickstart">
+    Get NativeLink running with Docker in under 5 minutes.
+  </Card>
+  
+  <Card title="Installation" icon="download" href="/installation">
+    Explore all installation methods including Docker, Nix, and building from source.
+  </Card>
+  
+  <Card title="Configuration" icon="gear" href="/config/overview">
+    Learn how to configure NativeLink for your use case.
+  </Card>
+  
+  <Card title="Integration" icon="puzzle-piece" href="/integration/bazel">
+    Integrate NativeLink with your build tools.
+  </Card>
+</CardGroup>
+
+## Why NativeLink?
+
+### Performance at scale
+
+NativeLink is designed to handle massive build workloads efficiently. Its architecture supports:
+
+- **Intelligent caching**: Only rebuild what changed
+- **Parallel execution**: Distribute work across workers
+- **Fast I/O**: Optimized storage backends including filesystem, S3, and Redis
+- **Low latency**: Minimal overhead for cache hits
+
+### Production-ready
+
+NativeLink is battle-tested in production environments:
+
+- Handles over 1 billion requests per month
+- Used by enterprise customers including Samsung
+- Active development and community support
+- Comprehensive monitoring and observability
+
+### Open source
+
+NativeLink is licensed under the Functional Source License (FSL-1.1-Apache-2.0), which converts to Apache 2.0 after two years. This ensures:
+
+- Full source code transparency
+- Community contributions welcome
+- Long-term Apache 2.0 compatibility
+- Commercial-friendly licensing
+
+## Architecture overview
+
+NativeLink consists of several key components:
+
+<Steps>
+  <Step title="Content Addressable Storage (CAS)">
+    Stores build artifacts, inputs, and outputs using content-addressed storage for efficient deduplication.
+  </Step>
+  
+  <Step title="Action Cache (AC)">
+    Caches the results of build actions to avoid redundant work when inputs haven't changed.
+  </Step>
+  
+  <Step title="Scheduler">
+    Distributes build and test tasks to available workers based on platform requirements and resource availability.
+  </Step>
+  
+  <Step title="Workers">
+    Execute build and test tasks in isolated environments, reporting results back to the scheduler.
+  </Step>
+</Steps>
+
+## Learn more
+
+<CardGroup cols={2}>
+  <Card title="Core concepts" icon="book" href="/concepts/architecture">
+    Understand the architecture and design principles behind NativeLink.
+  </Card>
+  
+  <Card title="Deployment" icon="server" href="/deployment/docker">
+    Deploy NativeLink in your environment.
+  </Card>
+  
+  <Card title="Operations" icon="chart-line" href="/operations/monitoring">
+    Monitor and maintain your NativeLink deployment.
+  </Card>
+  
+  <Card title="Contributing" icon="code-branch" href="/contributing/overview">
+    Join the community and contribute to NativeLink.
+  </Card>
+</CardGroup>
+
+## Community and support
+
+<CardGroup cols={2}>
+  <Card title="GitHub" icon="github" href="https://github.com/TraceMachina/nativelink">
+    View the source code, report issues, and contribute.
+  </Card>
+  
+  <Card title="Slack" icon="slack" href="https://forms.gle/LtaWSixEC6bYi5xF7">
+    Join the community Slack for discussions and support.
+  </Card>
+  
+  <Card title="Website" icon="globe" href="https://nativelink.com">
+    Visit the official NativeLink website.
+  </Card>
+  
+  <Card title="Watch the intro video" icon="video" href="https://www.youtube.com/watch?v=WLpqFuyLMUQ">
+    NativeLink explained in 90 seconds.
+  </Card>
+</CardGroup>

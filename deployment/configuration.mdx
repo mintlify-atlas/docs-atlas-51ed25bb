@@ -1,0 +1,699 @@
+---
+title: Configuration Reference
+description: Complete reference for NativeLink JSON5 configuration file format
+---
+
+NativeLink uses JSON5 configuration files to define stores, workers, schedulers, and servers. This guide covers the complete configuration format with examples.
+
+## Configuration Structure
+
+A NativeLink configuration file has five top-level sections:
+
+```json5
+{
+  "stores": [],      // Storage backends
+  "workers": [],     // Worker configurations
+  "schedulers": [],  // Job schedulers
+  "servers": [],     // Server listeners and services
+  "global": {}       // Global settings
+}
+```
+
+<Note>
+  Configuration files use JSON5 format, which supports comments, trailing commas, and unquoted keys.
+</Note>
+
+## Stores
+
+Stores define how NativeLink stores data. Each store has a unique name and type.
+
+### Store Types
+
+- `filesystem`: Local disk storage
+- `memory`: In-memory storage
+- `redis_store`: Redis backend
+- `experimental_cloud_object_store`: S3/GCS/Azure storage
+- `grpc`: Remote gRPC store
+- `fast_slow`: Tiered caching (fast + slow)
+- `compression`: Compressed storage wrapper
+- `dedup`: Deduplication wrapper
+- `verify`: Verification wrapper
+- `completeness_checking`: AC completeness checking
+- `existence_cache`: Existence caching wrapper
+
+### Filesystem Store
+
+Local disk storage with LRU eviction:
+
+```json5
+{
+  name: "CAS_MAIN_STORE",
+  filesystem: {
+    content_path: "/tmp/nativelink/cas/content",
+    temp_path: "/tmp/nativelink/cas/tmp",
+    eviction_policy: {
+      max_bytes: 10000000000, // 10GB
+    },
+  },
+}
+```
+
+**Options:**
+- `content_path`: Directory for storing content
+- `temp_path`: Directory for temporary files
+- `eviction_policy.max_bytes`: Maximum storage size in bytes
+
+### Memory Store
+
+In-memory storage for hot data:
+
+```json5
+{
+  name: "MEMORY_STORE",
+  memory: {
+    eviction_policy: {
+      max_bytes: 1000000000, // 1GB
+    },
+  },
+}
+```
+
+### Fast-Slow Store
+
+Two-tier caching with fast and slow backends:
+
+```json5
+{
+  name: "WORKER_FAST_SLOW_STORE",
+  fast_slow: {
+    fast: {
+      filesystem: {
+        content_path: "/data/cas/content",
+        temp_path: "/data/cas/tmp",
+        eviction_policy: { max_bytes: 10000000000 },
+      },
+    },
+    fast_direction: "get",  // "get", "put", or "both"
+    slow: {
+      ref_store: { name: "GRPC_REMOTE_STORE" },
+    },
+  },
+}
+```
+
+**Options:**
+- `fast`: Fast storage tier (usually filesystem or memory)
+- `slow`: Slow storage tier (usually remote or cloud)
+- `fast_direction`: When to use fast tier ("get", "put", "both")
+
+### Cloud Object Store
+
+S3, GCS, or Azure Blob Storage:
+
+<CodeGroup>
+```json5 AWS S3
+{
+  name: "CAS_S3_STORE",
+  experimental_cloud_object_store: {
+    provider: "aws",
+    region: "us-east-1",
+    bucket: "nativelink-cas",
+    key_prefix: "cas/",
+    retry: {
+      max_retries: 6,
+      delay: 0.3,
+      jitter: 0.5,
+    },
+  },
+}
+```
+
+```json5 Google Cloud Storage
+{
+  name: "CAS_GCS_STORE",
+  experimental_cloud_object_store: {
+    provider: "gcs",
+    bucket: "nativelink-cas",
+    key_prefix: "cas/",
+    retry: {
+      max_retries: 6,
+      delay: 0.3,
+      jitter: 0.5,
+    },
+  },
+}
+```
+</CodeGroup>
+
+**Options:**
+- `provider`: "aws", "gcs", or "azure"
+- `region`: Cloud provider region (AWS only)
+- `bucket`: Bucket/container name
+- `key_prefix`: Optional prefix for all keys
+- `retry.max_retries`: Maximum retry attempts
+- `retry.delay`: Initial delay in seconds
+- `retry.jitter`: Jitter factor (0-1)
+
+### Redis Store
+
+Redis backend for distributed caching:
+
+```json5
+{
+  name: "CAS_REDIS_STORE",
+  redis_store: {
+    addresses: [
+      "redis://127.0.0.1:6379/",
+    ],
+    mode: "cluster",  // "cluster" or "standalone"
+  },
+}
+```
+
+### gRPC Store
+
+Remote store accessed via gRPC:
+
+```json5
+{
+  name: "GRPC_REMOTE_STORE",
+  grpc: {
+    instance_name: "main",
+    endpoints: [
+      { address: "grpc://cas-server:50051" },
+    ],
+    store_type: "cas",  // "cas" or "ac"
+  },
+}
+```
+
+### Compression Store
+
+Wrapper that compresses data:
+
+```json5
+{
+  name: "COMPRESSED_CAS",
+  compression: {
+    compression_algorithm: {
+      lz4: {},  // or zstd: { level: 3 }
+    },
+    backend: {
+      filesystem: {
+        content_path: "/data/cas/content",
+        temp_path: "/data/cas/tmp",
+        eviction_policy: { max_bytes: 10000000000 },
+      },
+    },
+  },
+}
+```
+
+**Algorithms:**
+- `lz4`: Fast compression (default)
+- `zstd`: Better compression ratio, configurable level (1-22)
+
+### Dedup Store
+
+Content deduplication with separate index and content stores:
+
+```json5
+{
+  name: "DEDUP_CAS",
+  dedup: {
+    index_store: {
+      memory: {
+        eviction_policy: { max_bytes: 100000000 },
+      },
+    },
+    content_store: {
+      filesystem: {
+        content_path: "/data/dedup/content",
+        temp_path: "/data/dedup/tmp",
+        eviction_policy: { max_bytes: 10000000000 },
+      },
+    },
+  },
+}
+```
+
+## Workers
+
+Workers execute build actions.
+
+### Local Worker
+
+```json5
+workers: [
+  {
+    local: {
+      name: "worker-1",  // Optional worker name
+      worker_api_endpoint: {
+        uri: "grpc://scheduler:50061",
+      },
+      cas_fast_slow_store: "WORKER_FAST_SLOW_STORE",
+      upload_action_result: {
+        ac_store: "AC_MAIN_STORE",
+      },
+      work_directory: "/tmp/nativelink/work",
+      platform_properties: {
+        cpu_count: {
+          values: ["16"],
+          // Or query dynamically:
+          // query_cmd: "nproc",
+        },
+        memory_kb: { values: ["32000000"] },
+        OSFamily: { values: ["linux"] },
+        ISA: { values: ["x86-64"] },
+        "container-image": { values: [""] },
+      },
+      additional_environment: {
+        PATH: "/usr/local/bin:/usr/bin:/bin",
+        HOME: "/tmp",
+      },
+    },
+  },
+]
+```
+
+**Key Options:**
+- `worker_api_endpoint.uri`: Scheduler endpoint
+- `cas_fast_slow_store`: Store name for CAS data
+- `upload_action_result.ac_store`: Store name for action cache
+- `work_directory`: Working directory for builds
+- `platform_properties`: Worker capabilities
+- `additional_environment`: Environment variables for actions
+
+### Platform Properties
+
+Platform properties define worker capabilities:
+
+| Property | Type | Description |
+|----------|------|-------------|
+| `cpu_count` | minimum | Number of CPU cores |
+| `memory_kb` | minimum | Memory in KB |
+| `OSFamily` | priority | Operating system (linux, darwin, windows) |
+| `ISA` | exact | Instruction set (x86-64, aarch64) |
+| `container-image` | priority | Docker image support |
+| `gpu_count` | minimum | Number of GPUs |
+| `gpu_model` | exact | GPU model |
+
+**Matching Types:**
+- `exact`: Must match exactly
+- `priority`: Prefer matches, allow fallback
+- `minimum`: Worker must meet or exceed value
+- `ignore`: Ignored by scheduler
+
+## Schedulers
+
+Schedulers assign work to workers.
+
+### Simple Scheduler
+
+```json5
+schedulers: [
+  {
+    name: "MAIN_SCHEDULER",
+    simple: {
+      supported_platform_properties: {
+        cpu_count: "minimum",
+        memory_kb: "minimum",
+        OSFamily: "priority",
+        "container-image": "priority",
+        ISA: "exact",
+      },
+    },
+  },
+]
+```
+
+**Options:**
+- `supported_platform_properties`: Map of property to matching type
+
+<Warning>
+  Platform properties in the scheduler must match those advertised by workers.
+</Warning>
+
+## Servers
+
+Servers expose gRPC services.
+
+### Public Server
+
+Serves client requests (CAS, AC, Execution):
+
+```json5
+servers: [
+  {
+    name: "public",
+    listener: {
+      http: {
+        socket_address: "0.0.0.0:50051",
+        // Optional TLS:
+        // tls: {
+        //   cert_file: "/certs/server.crt",
+        //   key_file: "/certs/server.key",
+        // },
+      },
+    },
+    services: {
+      cas: [
+        {
+          instance_name: "main",
+          cas_store: "CAS_MAIN_STORE",
+        },
+      ],
+      ac: [
+        {
+          instance_name: "main",
+          ac_store: "AC_MAIN_STORE",
+        },
+      ],
+      execution: [
+        {
+          instance_name: "main",
+          cas_store: "CAS_MAIN_STORE",
+          scheduler: "MAIN_SCHEDULER",
+        },
+      ],
+      capabilities: [
+        {
+          instance_name: "main",
+          remote_execution: {
+            scheduler: "MAIN_SCHEDULER",
+          },
+        },
+      ],
+      bytestream: {
+        cas_stores: { main: "CAS_MAIN_STORE" },
+      },
+    },
+  },
+]
+```
+
+### Private Server
+
+Serves worker API (backend only):
+
+```json5
+{
+  name: "private_workers_server",
+  listener: {
+    http: {
+      socket_address: "0.0.0.0:50061",
+    },
+  },
+  services: {
+    worker_api: {
+      scheduler: "MAIN_SCHEDULER",
+    },
+    admin: {},
+    health: {},
+  },
+}
+```
+
+<Warning>
+  Never expose the worker API server publicly. It has full control over the scheduler.
+</Warning>
+
+### Available Services
+
+| Service | Purpose | Port Convention |
+|---------|---------|----------------|
+| `cas` | Content Addressable Storage | 50051 |
+| `ac` | Action Cache | 50051 |
+| `execution` | Remote Execution API | 50052 |
+| `capabilities` | Server capabilities | 50051 |
+| `bytestream` | ByteStream API | 50051 |
+| `worker_api` | Worker registration | 50061 |
+| `admin` | Admin operations | 50061 |
+| `health` | Health checks | 50061 |
+| `fetch` | Fetch API | 50051 |
+| `push` | Push API | 50051 |
+
+### TLS Configuration
+
+Enable TLS for secure communication:
+
+```json5
+listener: {
+  http: {
+    socket_address: "0.0.0.0:50051",
+    tls: {
+      cert_file: "/certs/server.crt",
+      key_file: "/certs/server.key",
+      // Optional client verification:
+      // ca_file: "/certs/ca.crt",
+      // verify_client: true,
+    },
+  },
+}
+```
+
+## Global Settings
+
+Global configuration options:
+
+```json5
+global: {
+  max_open_files: 24576,
+}
+```
+
+**Options:**
+- `max_open_files`: Maximum number of open file descriptors
+
+## Environment Variables
+
+Configuration files support environment variable substitution:
+
+```json5
+{
+  stores: [
+    {
+      name: "CAS_STORE",
+      filesystem: {
+        content_path: "${DATA_DIR:-/tmp}/cas/content",
+      },
+    },
+  ],
+}
+```
+
+**Syntax:**
+- `${VAR}`: Required variable (fails if not set)
+- `${VAR:-default}`: Optional variable with default value
+
+## Complete Example
+
+<CodeGroup>
+```json5 All-in-One
+{
+  stores: [
+    {
+      name: "AC_MAIN_STORE",
+      filesystem: {
+        content_path: "/tmp/nativelink/ac/content",
+        temp_path: "/tmp/nativelink/ac/tmp",
+        eviction_policy: { max_bytes: 1000000000 },
+      },
+    },
+    {
+      name: "WORKER_FAST_SLOW_STORE",
+      fast_slow: {
+        fast: {
+          filesystem: {
+            content_path: "/tmp/nativelink/cas/content",
+            temp_path: "/tmp/nativelink/cas/tmp",
+            eviction_policy: { max_bytes: 10000000000 },
+          },
+        },
+        slow: { noop: {} },
+      },
+    },
+  ],
+  schedulers: [
+    {
+      name: "MAIN_SCHEDULER",
+      simple: {
+        supported_platform_properties: {
+          cpu_count: "minimum",
+          OSFamily: "priority",
+          ISA: "exact",
+        },
+      },
+    },
+  ],
+  workers: [
+    {
+      local: {
+        worker_api_endpoint: { uri: "grpc://127.0.0.1:50061" },
+        cas_fast_slow_store: "WORKER_FAST_SLOW_STORE",
+        upload_action_result: { ac_store: "AC_MAIN_STORE" },
+        work_directory: "/tmp/nativelink/work",
+        platform_properties: {
+          cpu_count: { query_cmd: "nproc" },
+          OSFamily: { values: ["linux"] },
+          ISA: { values: ["x86-64"] },
+        },
+      },
+    },
+  ],
+  servers: [
+    {
+      name: "public",
+      listener: { http: { socket_address: "0.0.0.0:50051" } },
+      services: {
+        cas: [{ instance_name: "main", cas_store: "WORKER_FAST_SLOW_STORE" }],
+        ac: [{ instance_name: "main", ac_store: "AC_MAIN_STORE" }],
+        execution: [
+          {
+            instance_name: "main",
+            cas_store: "WORKER_FAST_SLOW_STORE",
+            scheduler: "MAIN_SCHEDULER",
+          },
+        ],
+        capabilities: [
+          {
+            instance_name: "main",
+            remote_execution: { scheduler: "MAIN_SCHEDULER" },
+          },
+        ],
+        bytestream: [{ instance_name: "main", cas_store: "WORKER_FAST_SLOW_STORE" }],
+      },
+    },
+    {
+      name: "private_workers_server",
+      listener: { http: { socket_address: "0.0.0.0:50061" } },
+      services: {
+        worker_api: { scheduler: "MAIN_SCHEDULER" },
+        admin: {},
+        health: {},
+      },
+    },
+  ],
+  global: {
+    max_open_files: 24576,
+  },
+}
+```
+
+```json5 Production with S3
+{
+  stores: [
+    {
+      name: "CAS_MAIN_STORE",
+      verify: {
+        verify_size: true,
+        backend: {
+          dedup: {
+            index_store: {
+              fast_slow: {
+                fast: {
+                  memory: { eviction_policy: { max_bytes: "100mb" } },
+                },
+                slow: {
+                  experimental_cloud_object_store: {
+                    provider: "aws",
+                    region: "us-east-1",
+                    bucket: "nativelink-cas-index",
+                    key_prefix: "index/",
+                    retry: { max_retries: 6, delay: 0.3, jitter: 0.5 },
+                  },
+                },
+              },
+            },
+            content_store: {
+              compression: {
+                compression_algorithm: { lz4: {} },
+                backend: {
+                  fast_slow: {
+                    fast: {
+                      memory: { eviction_policy: { max_bytes: "100mb" } },
+                    },
+                    slow: {
+                      experimental_cloud_object_store: {
+                        provider: "aws",
+                        region: "us-east-1",
+                        bucket: "nativelink-cas-content",
+                        key_prefix: "content/",
+                        retry: { max_retries: 6, delay: 0.3, jitter: 0.5 },
+                      },
+                    },
+                  },
+                },
+              },
+            },
+          },
+        },
+      },
+    },
+    {
+      name: "AC_MAIN_STORE",
+      fast_slow: {
+        fast: {
+          memory: { eviction_policy: { max_bytes: "100mb" } },
+        },
+        slow: {
+          experimental_cloud_object_store: {
+            provider: "aws",
+            region: "us-east-1",
+            bucket: "nativelink-ac",
+            key_prefix: "ac/",
+            retry: { max_retries: 6, delay: 0.3, jitter: 0.5 },
+          },
+        },
+      },
+    },
+  ],
+  schedulers: [
+    {
+      name: "MAIN_SCHEDULER",
+      simple: {
+        supported_platform_properties: {
+          cpu_count: "minimum",
+          memory_kb: "minimum",
+          OSFamily: "priority",
+          ISA: "exact",
+        },
+      },
+    },
+  ],
+  servers: [
+    {
+      listener: { http: { socket_address: "0.0.0.0:50051" } },
+      services: {
+        cas: [{ instance_name: "main", cas_store: "CAS_MAIN_STORE" }],
+        ac: [{ instance_name: "main", ac_store: "AC_MAIN_STORE" }],
+        execution: [
+          { instance_name: "main", cas_store: "CAS_MAIN_STORE", scheduler: "MAIN_SCHEDULER" },
+        ],
+        capabilities: [
+          { instance_name: "main", remote_execution: { scheduler: "MAIN_SCHEDULER" } },
+        ],
+        bytestream: { cas_stores: { main: "CAS_MAIN_STORE" } },
+        health: {},
+      },
+    },
+  ],
+}
+```
+</CodeGroup>
+
+## Validation
+
+Validate your configuration before deploying:
+
+```bash
+# Test configuration
+nativelink --config config.json5 --validate
+
+# Dry run
+nativelink --config config.json5 --dry-run
+```
+
+<Note>
+  For more configuration examples, see the [nativelink-config/examples](https://github.com/TraceMachina/nativelink/tree/main/nativelink-config/examples) directory.
+</Note>

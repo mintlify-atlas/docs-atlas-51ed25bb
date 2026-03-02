@@ -1,0 +1,313 @@
+---
+title: Contribution Guidelines
+description: Learn how to contribute to NativeLink through pull requests, code reviews, and following our development workflow.
+---
+
+NativeLink welcomes contribution from everyone. This guide outlines the process and best practices for contributing to the project.
+
+## Getting Started
+
+Contributions to NativeLink or its dependencies should be made in the form of GitHub pull requests. Each pull request will be reviewed by a core contributor (someone with permission to land patches) and either landed in the main tree or given feedback for changes that would be required.
+
+If you wish to work on an issue, please claim it first by commenting on the GitHub issue. This prevents duplicated efforts from contributors on the same issue.
+
+## Git Setup
+
+NativeLink has a specific contribution process to ensure consistent quality across all commits.
+
+### Initial Configuration
+
+1. In your [GitHub settings](https://github.com/settings/keys), set up distinct authentication and signing keys:
+   - [Generate a new SSH key](https://docs.github.com/en/authentication/connecting-to-github-with-ssh/generating-a-new-ssh-key-and-adding-it-to-the-ssh-agent)
+   - [Add the SSH key to your account](https://docs.github.com/en/authentication/connecting-to-github-with-ssh/adding-a-new-ssh-key-to-your-github-account)
+
+2. Fork the `TraceMachina/nativelink` repository by clicking the `Fork` button.
+
+3. Clone your fork:
+
+   ```bash
+   git clone git@github.com:yourusername/nativelink
+   ```
+
+   <Warning>
+   Don't use `git clone git@github.com:TraceMachina/nativelink` as this clones the upstream repository directly.
+   </Warning>
+
+4. Navigate to the cloned repository:
+
+   ```bash
+   cd nativelink
+   ```
+
+5. Add `TraceMachina/nativelink` as a remote repository:
+
+   ```bash
+   git remote add upstream git@github.com:TraceMachina/nativelink
+   ```
+
+   <Tip>
+   Verify your setup with `git remote -v`. The output should show:
+   ```bash
+   origin   git@github.com:yourusername/nativelink (fetch)
+   origin   git@github.com:yourusername/nativelink (push)
+   upstream git@github.com:TraceMachina/nativelink (fetch)
+   upstream git@github.com:TraceMachina/nativelink (push)
+   ```
+   </Tip>
+
+6. Configure git to sign your commits. Create a `.gitconfig` file in your home directory:
+
+   ```ini
+   [user]
+        name = Your Full Name
+        email = the-email-you-use-on-github@example.com
+        signingkey = ~/.ssh/your_private_signing_key
+
+   [gpg]
+        format = ssh  # Or gpg if you use a GPG key
+
+   [commit]
+        gpgsign = true
+
+   [tag]
+        gpgsign = true
+   ```
+
+## Development Environment
+
+NativeLink ships its tooling in a Nix flake configured via `flake.nix` in the repository root. While you can work on some parts without this environment, it helps reproduce CI locally.
+
+### Setup Steps
+
+1. Install Nix with flakes using the [experimental nix installer](https://github.com/NixOS/experimental-nix-installer). See the [Flakes wiki](https://nixos.wiki/wiki/Flakes) for more information.
+
+2. Optionally install [`direnv`](https://direnv.net/docs/installation.html) (highly recommended):
+
+   ```bash
+   nix profile install nixpkgs#direnv
+
+   # Add the appropriate hook for your shell
+   # See: https://direnv.net/docs/hook.html
+
+   # Restart your terminal
+
+   # When you cd into the nativelink repository,
+   # run direnv allow when prompted
+   ```
+
+   <Note>
+   Without `direnv`, you'll need to manually run `nix develop` each time you enter the repository or switch branches.
+   </Note>
+
+   <Tip>
+   Verify the environment is active with `env | grep NIX`. You should see several `*NIX_*` environment variables.
+   </Tip>
+
+3. Install a C++ toolchain:
+
+   ```bash
+   # Use your distribution's package manager, or install via nix:
+   nix profile install nixpkgs#clang
+   ```
+
+## Pull Request Process
+
+NativeLink doesn't allow direct commits to the main repository. All contributions, including those from core contributors, must go through pull requests.
+
+### Creating a Pull Request
+
+1. Ensure your fork is up-to-date:
+
+   ```bash
+   git switch main
+   git pull -r upstream main
+   git push
+   ```
+
+   <Tip>
+   Use `git log` to verify your branches are synchronized:
+   ```bash
+   # Should show:
+   commit ... (HEAD -> main, upstream/main, origin/main, origin/HEAD)
+   ```
+   </Tip>
+
+2. Create a new branch:
+
+   ```bash
+   git switch -c some-feature
+   ```
+
+3. Make your changes and create a commit following these guidelines:
+
+   - Use a capital letter to start the commit title
+   - Use imperative tone ("Add feature" not "Adds feature")
+   - Don't end the title with a period
+   - Keep the first line as short as possible
+   - Add details in the commit body if needed
+   - Limit commit body lines to 72 characters
+   - If you need "and" in the title, consider splitting the commit
+
+   ```bash
+   # Good
+   Add some feature
+
+   # Bad - trailing period
+   Add some feature.
+
+   # Bad - not imperative
+   Adds some feature
+
+   # Bad - should be split
+   Add some feature and another feature
+   ```
+
+4. Push your commit:
+
+   ```bash
+   git push --set-upstream origin some-feature
+   ```
+
+5. Go to [GitHub pulls](https://github.com/TraceMachina/nativelink/pulls) and click the button to create a new pull request.
+
+6. Click the purple `Reviewable` button on your pull request page to add reviewers with `+@somereviewer`.
+
+7. If you need to make changes, use `git commit --amend` and `git push -f` to update the commit in-place. Changes between versions remain visible in Reviewable.
+
+### Using Git Rebase
+
+When working on a feature, your branch may become outdated. To update it:
+
+```bash
+git switch main
+git pull -r upstream main
+git push
+git switch some-complex-feature
+git rebase main
+git push -f
+```
+
+## Development Workflows
+
+### Rust Formatting
+
+If `bazel test` reports formatting errors, run:
+
+```bash
+bazel run --config=rustfmt @rules_rust//:rustfmt
+```
+
+### Pre-commit Hooks
+
+Ensure you're in the Nix development environment, then run:
+
+```bash
+pre-commit run -a
+```
+
+This automatically applies fixes and formatting. Changed files aren't automatically staged, so use `git add` to stage them manually.
+
+### Setting Up rust-analyzer
+
+[rust-analyzer](https://rust-analyzer.github.io/) works out of the box, but for Bazel integration, generate a project configuration:
+
+```bash
+bazel run @rules_rust//tools/rust_analyzer:gen_rust_project
+```
+
+This creates a `rust-project.json` file. Regenerate it when adding new files or dependencies.
+
+For VS Code, configure `tasks.json` to auto-generate this file on folder open:
+
+```jsonc
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "Generate rust-project.json",
+      "command": "bazel",
+      "args": ["run", "@rules_rust//tools/rust_analyzer:gen_rust_project"],
+      "options": {
+        "cwd": "${workspaceFolder}"
+      },
+      "group": "build",
+      "problemMatcher": [],
+      "presentation": {
+        "reveal": "never",
+        "panel": "dedicated"
+      },
+      "runOptions": {
+        "runOn": "folderOpen"
+      },
+      "dependsOn": "Build nativelink"
+    },
+    {
+      "label": "Build nativelink",
+      "command": "bazel",
+      "args": ["build", "//:nativelink"],
+      "options": {
+        "cwd": "${workspaceFolder}"
+      },
+      "group": "build",
+      "presentation": {
+        "reveal": "silent",
+        "panel": "shared"
+      }
+    }
+  ]
+}
+```
+
+Add to `.vscode/settings.json`:
+
+```jsonc
+{
+  "rust-analyzer.linkedProjects": ["rust-project.json"]
+}
+```
+
+## Documentation
+
+### Generating Documentation
+
+View documentation for `nativelink-*` crates:
+
+```bash
+docs
+```
+
+Build individual crate docs:
+
+```bash
+# All docs
+bazel build docs
+
+# Single crate
+bazel build nativelink-config:docs
+```
+
+Run documentation tests:
+
+```bash
+bazel test doctests
+```
+
+### Writing Documentation
+
+NativeLink follows the [Microsoft Style Guide](https://learn.microsoft.com/en-us/style-guide/welcome/).
+
+The project uses Vale for documentation style enforcement. Pre-commit hooks forbid errors but permit warnings. To view all suggestions:
+
+```bash
+vale somefile
+```
+
+## Code Coverage
+
+Generate branch-based coverage reports:
+
+```bash
+nix build .#nativelinkCoverageForHost
+```
+
+The `result` symlink contains a webpage with the visualized report.

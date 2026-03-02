@@ -1,0 +1,426 @@
+---
+title: Building from Source
+description: Build NativeLink from source using Nix, Bazel, or Cargo
+---
+
+NativeLink can be built from source using three different approaches. Choose the method that best fits your development workflow.
+
+## Quick Comparison
+
+<CardGroup cols={3}>
+  <Card title="Nix" icon="snowflake">
+    **Recommended**
+    - Reproducible builds
+    - Matches CI environment
+    - Cross-platform support
+    - All tooling included
+  </Card>
+  <Card title="Bazel" icon="cube">
+    **Production**
+    - Primary build system
+    - Remote execution ready
+    - Strict caching
+    - Advanced toolchains
+  </Card>
+  <Card title="Cargo" icon="rust">
+    **Development**
+    - Standard Rust workflow
+    - Fast iteration
+    - IDE integration
+    - Direct dependencies
+  </Card>
+</CardGroup>
+
+## Prerequisites
+
+Before building, ensure you have:
+
+- **Git** - For cloning the repository
+- **Build tools** - C++ compiler (Clang recommended)
+- **Disk space** - At least 10GB for build artifacts
+
+### Platform-Specific Requirements
+
+<Tabs>
+  <Tab title="Linux">
+    - Clang 11 or newer
+    - OpenSSL development headers
+    - pkg-config
+  </Tab>
+  <Tab title="macOS">
+    - Xcode Command Line Tools
+    - Homebrew (optional but recommended)
+  </Tab>
+  <Tab title="Windows">
+    - Windows 10/11 with WSL2
+    - Visual Studio 2019+ Build Tools (for native builds)
+  </Tab>
+</Tabs>
+
+## Building with Nix
+
+<Note>
+  Nix provides the most reproducible builds and is the recommended method for development. It matches the CI environment closely.
+</Note>
+
+### Installation
+
+<Steps>
+  <Step title="Install Nix">
+    Install Nix with flakes support using the [experimental nix installer](https://github.com/NixOS/experimental-nix-installer):
+
+    ```bash
+    curl --proto '=https' --tlsv1.2 -sSf -L https://install.determinate.systems/nix | sh -s -- install
+    ```
+  </Step>
+
+  <Step title="Install direnv (Recommended)">
+    [direnv](https://direnv.net/) automatically loads the development environment:
+
+    ```bash
+    nix profile install nixpkgs#direnv
+    ```
+
+    Add the hook to your shell (see [direnv hook documentation](https://direnv.net/docs/hook.html)).
+
+    After restarting your terminal:
+    ```bash
+    cd nativelink
+    direnv allow
+    ```
+
+    <Info>
+      Without direnv, run `nix develop` manually each time you enter the repository.
+    </Info>
+  </Step>
+
+  <Step title="Install C++ Toolchain">
+    The Nix environment doesn't ship a full C++ toolchain yet. Install Clang:
+
+    ```bash
+    # Via your package manager
+    # Ubuntu/Debian:
+    sudo apt install clang
+
+    # Arch:
+    sudo pacman -S clang
+
+    # Or via Nix:
+    nix profile install nixpkgs#clang
+    ```
+  </Step>
+
+  <Step title="Verify Environment">
+    Check that the Nix environment is active:
+
+    ```bash
+    env | grep NIX
+    # Should show several *NIX_* environment variables
+    ```
+  </Step>
+</Steps>
+
+### Building
+
+<Steps>
+  <Step title="Build NativeLink">
+    ```bash
+    # Build for your platform
+    nix build
+
+    # Run directly
+    ./result/bin/nativelink --help
+    ```
+  </Step>
+
+  <Step title="Build for Specific Platforms">
+    ```bash
+    # Linux x86_64 (musl)
+    nix build .#nativelink-x86_64-linux
+
+    # Linux aarch64 (musl)
+    nix build .#nativelink-aarch64-linux
+
+    # macOS builds (native compilation only)
+    nix build .#nativelink-x86_64-darwin  # On x86_64 macOS
+    nix build .#nativelink-aarch64-darwin # On aarch64 macOS
+    ```
+  </Step>
+
+  <Step title="Build Docker Image">
+    ```bash
+    nix build .#nativelink-image
+
+    # Load into Docker
+    docker load < result
+    ```
+  </Step>
+</Steps>
+
+### Development Tools in Nix
+
+The Nix development shell includes:
+
+- **Bazel** - Build system
+- **Rust** - Stable toolchain with rust-analyzer
+- **Pre-commit** - Git hooks for code quality
+- **git-cliff** - Changelog generation
+- **Cloud Tools** - AWS CLI, Google Cloud SDK, kubectl, etc.
+- **Debugging** - dive, trivy for container inspection
+
+See `flake.nix:453` for the complete tool list.
+
+## Building with Bazel
+
+<Note>
+  Bazel is NativeLink's primary build system. It provides hermetic builds with strict dependency management.
+</Note>
+
+### Installation
+
+<Steps>
+  <Step title="Install Bazelisk">
+    [Bazelisk](https://github.com/bazelbuild/bazelisk) automatically manages Bazel versions:
+
+    ```bash
+    # Via Nix (recommended if using Nix environment)
+    nix profile install nixpkgs#bazelisk
+
+    # Via Homebrew (macOS)
+    brew install bazelisk
+
+    # Via npm
+    npm install -g @bazel/bazelisk
+
+    # Manual download
+    # See: https://github.com/bazelbuild/bazelisk/releases
+    ```
+  </Step>
+
+  <Step title="Install Build Dependencies">
+    ```bash
+    # Clang/LLVM
+    # Ubuntu/Debian:
+    sudo apt install clang lld
+
+    # Arch:
+    sudo pacman -S clang lld
+
+    # macOS:
+    xcode-select --install
+    ```
+  </Step>
+</Steps>
+
+### Building
+
+<Steps>
+  <Step title="Build Main Binary">
+    ```bash
+    bazel build //:nativelink
+
+    # Run the binary
+    ./bazel-bin/nativelink --help
+    ```
+  </Step>
+
+  <Step title="Build All Targets">
+    ```bash
+    bazel build //...
+    ```
+  </Step>
+
+  <Step title="Build with Debug Symbols">
+    ```bash
+    bazel build --config=debug //:nativelink
+    ```
+  </Step>
+
+  <Step title="Build Documentation">
+    ```bash
+    # All crate documentation
+    bazel build :docs
+
+    # Single crate
+    bazel build //nativelink-config:docs
+    ```
+  </Step>
+</Steps>
+
+See [Development with Bazel](/contributing/bazel) for advanced usage.
+
+## Building with Cargo
+
+<Note>
+  Cargo provides the fastest iteration cycle for Rust development but requires manual dependency management.
+</Note>
+
+### Installation
+
+<Steps>
+  <Step title="Install Rust">
+    Install Rust via [rustup](https://rustup.rs/):
+
+    ```bash
+    curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+    ```
+
+    Ensure you have the minimum required version:
+    ```bash
+    rustc --version
+    # Should be >= 1.87.0 (see Cargo.toml:12)
+    ```
+  </Step>
+
+  <Step title="Install System Dependencies">
+    ```bash
+    # Ubuntu/Debian
+    sudo apt install pkg-config libssl-dev
+
+    # Arch
+    sudo pacman -S pkg-config openssl
+
+    # macOS
+    brew install openssl pkg-config
+    ```
+  </Step>
+</Steps>
+
+### Building
+
+<Steps>
+  <Step title="Build Main Binary">
+    ```bash
+    cargo build --release
+
+    # Run the binary
+    ./target/release/nativelink --help
+    ```
+  </Step>
+
+  <Step title="Build All Workspace Members">
+    ```bash
+    cargo build --workspace --release
+    ```
+  </Step>
+
+  <Step title="Build with Nix Features">
+    ```bash
+    cargo build --features nix
+    ```
+  </Step>
+
+  <Step title="Build Documentation">
+    ```bash
+    cargo doc --workspace --no-deps
+
+    # Open in browser
+    cargo doc --workspace --no-deps --open
+    ```
+  </Step>
+</Steps>
+
+See [Development with Cargo](/contributing/cargo) for advanced usage.
+
+## Verifying Your Build
+
+Test that your build works correctly:
+
+```bash
+# Check version
+./result/bin/nativelink --version       # Nix
+./bazel-bin/nativelink --version        # Bazel
+./target/release/nativelink --version   # Cargo
+
+# Run with example config
+curl -O https://raw.githubusercontent.com/TraceMachina/nativelink/main/nativelink-config/examples/basic_cas.json5
+
+./result/bin/nativelink basic_cas.json5       # Nix
+./bazel-bin/nativelink basic_cas.json5        # Bazel
+./target/release/nativelink basic_cas.json5   # Cargo
+```
+
+## Build Artifacts
+
+### Nix Build Outputs
+
+- **Binary**: `result/bin/nativelink`
+- **Docker Image**: `result` (loadable tarball)
+- **Coverage**: `result/index.html` (from coverage builds)
+
+### Bazel Build Outputs
+
+- **Binary**: `bazel-bin/nativelink`
+- **Documentation**: `bazel-bin/*/doc/`
+- **Test Results**: `bazel-testlogs/`
+
+### Cargo Build Outputs
+
+- **Debug**: `target/debug/nativelink`
+- **Release**: `target/release/nativelink`
+- **Documentation**: `target/doc/`
+- **Test Artifacts**: `target/debug/deps/`
+
+## Troubleshooting
+
+<AccordionGroup>
+  <Accordion title="Nix build fails with 'experimental features not enabled'">
+    Enable flakes in your Nix configuration:
+
+    ```bash
+    mkdir -p ~/.config/nix
+    echo "experimental-features = nix-command flakes" >> ~/.config/nix/nix.conf
+    ```
+  </Accordion>
+
+  <Accordion title="Bazel fails with 'Cannot find C++ compiler'">
+    Install Clang/LLVM:
+
+    ```bash
+    # Set the compiler explicitly
+    export CC=clang
+    bazel build //:nativelink
+    ```
+  </Accordion>
+
+  <Accordion title="Cargo fails with OpenSSL errors">
+    Install OpenSSL development headers:
+
+    ```bash
+    # Ubuntu/Debian
+    sudo apt install libssl-dev
+
+    # Or use vendored OpenSSL
+    cargo build --features vendored-openssl
+    ```
+  </Accordion>
+
+  <Accordion title="Out of disk space during build">
+    Clean build artifacts:
+
+    ```bash
+    # Nix
+    nix-collect-garbage -d
+
+    # Bazel
+    bazel clean --expunge
+
+    # Cargo
+    cargo clean
+    ```
+  </Accordion>
+</AccordionGroup>
+
+## Next Steps
+
+<CardGroup cols={3}>
+  <Card title="Development with Nix" icon="snowflake" href="/contributing/nix">
+    Deep dive into Nix development workflow
+  </Card>
+  <Card title="Development with Bazel" icon="cube" href="/contributing/bazel">
+    Learn Bazel build system features
+  </Card>
+  <Card title="Development with Cargo" icon="rust" href="/contributing/cargo">
+    Master Cargo development workflow
+  </Card>
+</CardGroup>

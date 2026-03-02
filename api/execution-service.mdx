@@ -1,0 +1,217 @@
+---
+title: Execution service
+description: Execute build actions remotely on distributed workers
+---
+
+The Execution service schedules and executes actions on remote workers, enabling distributed builds.
+
+## Overview
+
+The Execution service:
+- Accepts action execution requests
+- Schedules actions on available workers
+- Streams execution updates and results
+- Supports action cache integration
+
+**Key features:**
+- Distributed action execution
+- Platform-based worker matching
+- Action cache lookup
+- Real-time execution monitoring
+
+## Configuration
+
+<ParamField path="instance_name" type="string" required>
+  The instance name identifying this execution endpoint
+</ParamField>
+
+<ParamField path="scheduler" type="string" required>
+  Reference to the scheduler configured in the `schedulers` section
+</ParamField>
+
+<ParamField path="cas_store" type="string" required>
+  Reference to the CAS store for input/output data
+</ParamField>
+
+```json5
+{
+  services: {
+    execution: [
+      {
+        instance_name: "main",
+        scheduler: "MAIN_SCHEDULER",
+        cas_store: "MAIN_CAS_STORE"
+      }
+    ]
+  }
+}
+```
+
+## gRPC Methods
+
+### Execute
+
+Execute an action remotely.
+
+**Request:**
+
+<ParamField path="instance_name" type="string" required>
+  The instance name
+</ParamField>
+
+<ParamField path="action_digest" type="Digest" required>
+  Digest of the Action message to execute
+</ParamField>
+
+<ParamField path="skip_cache_lookup" type="boolean" default={false}>
+  Skip action cache lookup and force execution
+</ParamField>
+
+<ParamField path="execution_policy" type="ExecutionPolicy">
+  Execution constraints (priority, timeout)
+</ParamField>
+
+<ParamField path="results_cache_policy" type="ResultsCachePolicy">
+  How to cache the result
+</ParamField>
+
+**Response (stream):**
+
+The Execute method returns a stream of `Operation` messages with status updates:
+
+<ResponseField name="name" type="string">
+  Unique operation identifier
+</ResponseField>
+
+<ResponseField name="done" type="boolean">
+  True when execution is complete
+</ResponseField>
+
+<ResponseField name="metadata" type="ExecuteOperationMetadata">
+  Execution status:
+  - `QUEUED`: Waiting for worker
+  - `EXECUTING`: Running on worker
+  - `COMPLETED`: Finished
+</ResponseField>
+
+<ResponseField name="response" type="ExecuteResponse">
+  Final result (when done=true):
+  - `result`: ActionResult with outputs
+  - `status`: gRPC status
+  - `cached_result`: True if served from cache
+  - `message`: Error message if failed
+</ResponseField>
+
+**Example with grpcurl:**
+
+```bash
+grpcurl -plaintext \
+  -d '{
+    "instance_name": "main",
+    "action_digest": {
+      "hash": "abc123...",
+      "size_bytes": 256
+    },
+    "skip_cache_lookup": false
+  }' \
+  localhost:50051 build.bazel.remote.execution.v2.Execution/Execute
+```
+
+### WaitExecution
+
+Attach to an ongoing execution operation.
+
+**Request:**
+
+<ParamField path="name" type="string" required>
+  The operation name from Execute
+</ParamField>
+
+**Response (stream):**
+
+Returns a stream of `Operation` messages (same format as Execute).
+
+## Execution Flow
+
+<Steps>
+  <Step title="Action cache lookup">
+    If `skip_cache_lookup` is false, check the action cache first
+  </Step>
+  
+  <Step title="Worker matching">
+    Find workers matching the platform properties
+  </Step>
+  
+  <Step title="Action queuing">
+    Queue the action for an available worker
+  </Step>
+  
+  <Step title="Input download">
+    Worker downloads inputs from CAS
+  </Step>
+  
+  <Step title="Execution">
+    Worker executes the command
+  </Step>
+  
+  <Step title="Output upload">
+    Worker uploads outputs to CAS
+  </Step>
+  
+  <Step title="Result caching">
+    Store result in action cache if cacheable
+  </Step>
+</Steps>
+
+## Platform Properties
+
+Actions specify required worker capabilities via platform properties:
+
+```json
+{
+  "properties": [
+    {"name": "OSFamily", "value": "Linux"},
+    {"name": "cpu_count", "value": "4"},
+    {"name": "memory_kb", "value": "8388608"}
+  ]
+}
+```
+
+Workers must match these properties to execute the action.
+
+## Timeout Configuration
+
+Executions can timeout at multiple levels:
+
+<ParamField path="execution_policy.timeout" type="Duration">
+  Maximum execution time (from client)
+</ParamField>
+
+<ParamField path="scheduler.max_job_retries" type="uint32">
+  Retry failed actions up to N times
+</ParamField>
+
+<ParamField path="scheduler.worker_timeout_s" type="uint32">
+  Worker heartbeat timeout
+</ParamField>
+
+## Error Codes
+
+| Code | Description |
+|------|-------------|
+| `NOT_FOUND` | Action digest not in CAS |
+| `INVALID_ARGUMENT` | Invalid action or instance name |
+| `DEADLINE_EXCEEDED` | Execution timeout |
+| `RESOURCE_EXHAUSTED` | No workers available |
+| `FAILED_PRECONDITION` | Missing inputs |
+| `INTERNAL` | Worker or storage error |
+
+## Monitoring
+
+The execution service emits metrics:
+- Queue depth per instance
+- Active executions
+- Cache hit rate
+- Execution duration
+
+<Info>The Execution service follows the [Remote Execution API v2 specification](https://github.com/bazelbuild/remote-apis/blob/main/build/bazel/remote/execution/v2/remote_execution.proto)</Info>

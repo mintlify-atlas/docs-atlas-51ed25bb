@@ -1,0 +1,367 @@
+---
+title: "Fast-Slow Store"
+description: "Two-tier caching system with automatic promotion between fast and slow storage"
+---
+
+## Overview
+
+The Fast-Slow store implements a two-tier caching architecture where data is first attempted from a fast store (typically memory or SSD) and falls back to a slow store (typically network or HDD) if not found. This store automatically promotes data from slow to fast storage on reads and mirrors writes to both tiers.
+
+## Use Cases
+
+- **Hybrid storage tiers**: Combine fast local storage with durable cloud storage
+- **Performance optimization**: Keep hot data in fast storage, cold data in slow storage
+- **Cost optimization**: Use expensive fast storage sparingly, bulk storage cheaply
+- **Distributed caching**: Local fast cache with shared network slow tier
+- **Development/production parity**: Same configuration works with different storage backends
+
+## Performance Characteristics
+
+- **Cache hit (fast)**: Performance of fast store (sub-millisecond for memory)
+- **Cache miss**: Performance of slow store plus promotion cost
+- **Write performance**: Limited by slower of the two stores (typically slow store)
+- **Automatic warming**: Slow store reads automatically populate fast store
+- **Deduplication**: Multiple concurrent requests for same object only download once
+
+## Architecture
+
+### Read Flow
+
+1. Check if object exists in fast store
+2. If found, return from fast store
+3. If not found, fetch from slow store
+4. While streaming from slow store, simultaneously write to fast store (if `fast_direction` allows)
+5. Return data to client
+
+### Write Flow
+
+1. Write to fast store (if `fast_direction` allows updates)
+2. Write to slow store (if `slow_direction` allows updates)
+3. Both writes happen concurrently
+4. Success requires both to succeed (or whichever directions are enabled)
+
+## Configuration
+
+<ParamField path="fast" type="StoreSpec" required>
+  The fast store that will be attempted first.
+  
+  Typically configured as:
+  - Memory store for maximum speed
+  - Filesystem store on SSD for larger capacity
+  - Local Redis for distributed fast tier
+</ParamField>
+
+<ParamField path="fast_direction" type="StoreDirection" default="both">
+  Controls how the fast store is used.
+  
+  See [Store Direction](#store-direction) for options.
+  
+  Default: `"both"`
+</ParamField>
+
+<ParamField path="slow" type="StoreSpec" required>
+  The slow store that serves as the fallback and/or durable storage.
+  
+  Typically configured as:
+  - S3 or GCS for cloud-backed durable storage
+  - Filesystem store on HDD for local archival
+  - Network-attached storage
+  - Remote GRPC store
+</ParamField>
+
+<ParamField path="slow_direction" type="StoreDirection" default="both">
+  Controls how the slow store is used.
+  
+  See [Store Direction](#store-direction) for options.
+  
+  Default: `"both"`
+</ParamField>
+
+## Store Direction
+
+The `StoreDirection` enum controls read and write behavior for each tier:
+
+<ParamField path="both" type="StoreDirection">
+  The store operates normally - all get and put operations are handled by it.
+  
+  This is the default and most common setting.
+</ParamField>
+
+<ParamField path="update" type="StoreDirection">
+  Update operations (puts) will persist to this store, but Get operations will be ignored.
+  
+  **Use case**: Set on fast store for worker nodes that should only write results to slow store, but cache reads locally.
+</ParamField>
+
+<ParamField path="get" type="StoreDirection">
+  Get operations will persist to this store, but Update operations will be ignored.
+  
+  **Use case**: Populate fast store from reads without writing to it on updates.
+</ParamField>
+
+<ParamField path="read_only" type="StoreDirection">
+  Operate as a read-only store.
+  
+  **Use case**: Useful for upstream read-only stores or creating a diode configuration.
+</ParamField>
+
+## Configuration Examples
+
+### Basic Fast-Slow with Memory and Filesystem
+
+```json
+{
+  "fast_slow": {
+    "fast": {
+      "memory": {
+        "eviction_policy": {
+          "max_bytes": "500mb"
+        }
+      }
+    },
+    "slow": {
+      "filesystem": {
+        "content_path": "/tmp/nativelink/data/content_path-cas",
+        "temp_path": "/tmp/nativelink/data/tmp_path-cas",
+        "eviction_policy": {
+          "max_bytes": "2gb"
+        }
+      }
+    }
+  }
+}
+```
+
+### Fast SSD with S3 Slow Tier
+
+```json
+{
+  "fast_slow": {
+    "fast": {
+      "filesystem": {
+        "content_path": "/mnt/ssd/nativelink/content",
+        "temp_path": "/mnt/ssd/nativelink/temp",
+        "eviction_policy": {
+          "max_bytes": "100gb"
+        }
+      }
+    },
+    "slow": {
+      "experimental_cloud_object_store": {
+        "provider": "aws",
+        "region": "us-west-2",
+        "bucket": "nativelink-cache",
+        "key_prefix": "cas/"
+      }
+    }
+  }
+}
+```
+
+### Worker Node Configuration (Write-Through)
+
+Worker nodes that should cache reads locally but persist writes to shared storage:
+
+```json
+{
+  "fast_slow": {
+    "fast": {
+      "filesystem": {
+        "content_path": "~/.cache/nativelink/content",
+        "temp_path": "~/.cache/nativelink/temp",
+        "eviction_policy": {
+          "max_bytes": "50gb"
+        }
+      }
+    },
+    "fast_direction": "get",
+    "slow": {
+      "experimental_cloud_object_store": {
+        "provider": "aws",
+        "region": "us-east-1",
+        "bucket": "shared-build-cache"
+      }
+    }
+  }
+}
+```
+
+### Read-Only Upstream Cache
+
+Create a diode configuration with a read-only upstream store:
+
+```json
+{
+  "fast_slow": {
+    "fast": {
+      "filesystem": {
+        "content_path": "/var/cache/nativelink",
+        "temp_path": "/var/cache/nativelink/tmp",
+        "eviction_policy": {
+          "max_bytes": "200gb"
+        }
+      }
+    },
+    "slow": {
+      "grpc": {
+        "instance_name": "main",
+        "endpoints": [
+          {"address": "grpc://upstream-cache:50051"}
+        ],
+        "store_type": "cas"
+      }
+    },
+    "slow_direction": "read_only"
+  }
+}
+```
+
+### Three-Tier Configuration
+
+Combine memory, SSD, and S3 for a three-tier cache:
+
+```json
+{
+  "fast_slow": {
+    "fast": {
+      "memory": {
+        "eviction_policy": {
+          "max_bytes": "2gb"
+        }
+      }
+    },
+    "slow": {
+      "fast_slow": {
+        "fast": {
+          "filesystem": {
+            "content_path": "/mnt/nvme/nativelink/content",
+            "temp_path": "/mnt/nvme/nativelink/temp",
+            "eviction_policy": {
+              "max_bytes": "500gb"
+            }
+          }
+        },
+        "slow": {
+          "experimental_cloud_object_store": {
+            "provider": "aws",
+            "region": "us-west-2",
+            "bucket": "nativelink-archive"
+          }
+        }
+      }
+    }
+  }
+}
+```
+
+## Implementation Details
+
+### Deduplication
+
+The fast-slow store deduplicates concurrent requests for the same object:
+- First request streams from slow to fast store
+- Subsequent requests wait for the first to complete
+- All requests share the same download operation
+- Prevents duplicate network transfers and disk I/O
+
+### Promotion Strategy
+
+**On Read**:
+- Data is promoted from slow to fast store during streaming
+- Promotion happens concurrently with serving the client
+- If promotion fails, the read still succeeds
+
+**On Write**:
+- Data is written to both stores concurrently
+- Write fails if either store fails (unless direction is configured to skip)
+
+### Cache Warming
+
+The store automatically warms the fast cache:
+- Any read from slow store populates fast store
+- No manual cache warming required
+- Natural workload patterns keep hot data in fast tier
+
+## Important Warnings
+
+<Warning>
+  **Data consistency assumption**: This store assumes that if an object exists in the fast store, it also exists in the slow store. It never checks the slow store if the fast store has the object.
+  
+  This is important for remote execution scenarios where the slow store must contain all objects.
+</Warning>
+
+<Warning>
+  **Eviction can break assumptions**: If fast store evicts an object that was never written to slow store, reads will fail. Always ensure writes go to both stores or use appropriate `fast_direction` settings.
+</Warning>
+
+## Best Practices
+
+<Tip>
+  **Size fast store appropriately**: Aim for 80-90% cache hit rate on fast store. Monitor metrics and adjust `max_bytes` accordingly.
+</Tip>
+
+<Tip>
+  **Use memory for action cache**: Action cache entries are typically small and frequently accessed. Memory is ideal for AC, filesystem or S3 for CAS.
+</Tip>
+
+<Tip>
+  **Set evict_bytes**: Configure `evict_bytes` on fast store to 10-20% of `max_bytes` to prevent thrashing.
+</Tip>
+
+<Note>
+  **Worker node configuration**: For worker nodes in remote execution, use `fast_direction: "get"` to cache downloads locally while ensuring uploads go to shared storage.
+</Note>
+
+<Tip>
+  **Layer compression**: Put a compression store around the slow tier for network-backed storage to reduce bandwidth and costs.
+</Tip>
+
+## Performance Tuning
+
+### Cache Hit Optimization
+
+1. **Monitor cache hit rates**: Track fast vs slow store access patterns
+2. **Increase fast store size**: If hit rate is low, increase `max_bytes`
+3. **Adjust eviction policy**: Tune `max_seconds` for time-based locality
+4. **Consider access patterns**: Different workloads need different cache sizes
+
+### Write Performance
+
+1. **Use compression on slow tier**: Reduce network transfer time
+2. **Tune multipart uploads**: Increase `multipart_max_concurrent_uploads` for S3
+3. **Consider fast_direction**: Workers can use `get` direction to avoid fast store writes
+
+## Common Patterns
+
+### Development Environment
+
+```json
+{
+  "fast_slow": {
+    "fast": {"memory": {"eviction_policy": {"max_bytes": "1gb"}}},
+    "slow": {"filesystem": {"content_path": "~/.cache/nativelink", "temp_path": "~/.cache/nativelink/tmp", "eviction_policy": {"max_bytes": "10gb"}}}
+  }
+}
+```
+
+### Production Kubernetes
+
+```json
+{
+  "fast_slow": {
+    "fast": {"memory": {"eviction_policy": {"max_bytes": "4gb"}}},
+    "slow": {"experimental_cloud_object_store": {"provider": "aws", "region": "us-west-2", "bucket": "prod-cache"}}
+  }
+}
+```
+
+### High-Performance Build Farm
+
+```json
+{
+  "fast_slow": {
+    "fast": {"filesystem": {"content_path": "/mnt/nvme/cache", "temp_path": "/mnt/nvme/tmp", "eviction_policy": {"max_bytes": "500gb"}}},
+    "slow": {"experimental_cloud_object_store": {"provider": "aws", "region": "us-east-1", "bucket": "build-cache"}}
+  }
+}
+```

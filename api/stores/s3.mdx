@@ -1,0 +1,366 @@
+---
+title: "S3 Store"
+description: "Cloud object storage using Amazon S3 or S3-compatible services"
+---
+
+## Overview
+
+The S3 store (configured as `experimental_cloud_object_store`) provides cloud-based persistent storage using Amazon S3, Google Cloud Storage (GCS), or S3-compatible services like NetApp ONTAP. This store enables data sharing across multiple NativeLink instances and provides virtually unlimited storage capacity.
+
+<Warning>
+  This store never deletes files automatically. You are responsible for purging old files using S3 lifecycle policies or other external tools.
+</Warning>
+
+## Supported Backends
+
+### Amazon S3
+
+Uses Amazon's S3 service with system certificates for TLS verification via `rustls-platform-verifier`.
+
+### Google Cloud Storage (GCS)
+
+Uses Google's Cloud Storage service as an S3-compatible backend.
+
+### NetApp ONTAP S3
+
+S3-compatible storage specifically configured for ONTAP's requirements including custom TLS configuration and credentials management.
+
+## Use Cases
+
+- **Distributed deployments**: Share cache and artifacts across multiple NativeLink instances
+- **Unlimited storage**: Scale beyond local disk constraints
+- **Durable archival**: Long-term persistent storage of build artifacts
+- **Multi-region deployments**: Access cache from different geographic locations
+- **Hybrid architectures**: Cloud-backed slow tier with local fast tier
+
+## Performance Characteristics
+
+- **Read performance**: Network latency dependent (typically 50-200ms first byte)
+- **Write performance**: Supports multipart uploads for large objects
+- **Durability**: Extremely high (11 nines for S3)
+- **Availability**: High (99.9%+ for most S3 regions)
+- **Cost**: Pay per GB stored and transferred
+
+## Common Configuration
+
+All cloud object store backends share these common configuration options:
+
+<ParamField path="key_prefix" type="string">
+  Optional prefix to prepend to all object keys in the bucket. Useful for:
+  - Organizing data within a shared bucket
+  - Separating different environments (dev, staging, prod)
+  - Multi-tenant configurations
+  
+  Example: `"test-prefix-index/"`
+</ParamField>
+
+<ParamField path="retry" type="Retry">
+  Retry configuration for network request failures.
+  
+  See [Retry Configuration](#retry-configuration) for details.
+</ParamField>
+
+<ParamField path="consider_expired_after_s" type="number" default="0">
+  If the number of seconds since the `last_modified` time of the object is greater than this value, the object will not be considered "existing".
+  
+  This allows external tools to delete old objects. If a client receives a `NotFound`, it should re-upload the object.
+  
+  **Important**: Provide sufficient buffer time between this value and your external cleanup tool's expiration configuration.
+  
+  Default: 0 (never consider objects expired)
+</ParamField>
+
+<ParamField path="max_retry_buffer_per_request" type="number" default="5242880">
+  The maximum buffer size (in bytes) to retain in case of a retryable error during upload.
+  
+  Setting this to zero disables upload buffering, meaning any failure during upload will abort the entire upload and the client will likely receive an error.
+  
+  Default: 5MB (5242880 bytes)
+</ParamField>
+
+<ParamField path="multipart_max_concurrent_uploads" type="number" default="10">
+  Maximum number of concurrent `UploadPart` requests per `MultipartUpload`.
+  
+  Higher values can improve upload throughput for large objects but increase memory usage.
+  
+  Default: 10
+</ParamField>
+
+<ParamField path="insecure_allow_http" type="boolean" default="false">
+  Allow unencrypted HTTP connections.
+  
+  **Only use this for local testing. Never enable in production.**
+  
+  Default: false
+</ParamField>
+
+<ParamField path="disable_http2" type="boolean" default="false">
+  Disable HTTP/2 connections and only use HTTP/1.1.
+  
+  The default client configuration has both HTTP/1.1 and HTTP/2 enabled. Disable HTTP/2 if your environment has poor support or performance issues with HTTP/2.
+  
+  Default: false
+</ParamField>
+
+## AWS S3 Configuration
+
+<ParamField path="provider" type="string" required>
+  Set to `"aws"` for Amazon S3.
+</ParamField>
+
+<ParamField path="region" type="string" required>
+  AWS region for the S3 bucket.
+  
+  Examples: `"us-east-1"`, `"us-west-2"`, `"eu-north-1"`, `"af-south-1"`
+</ParamField>
+
+<ParamField path="bucket" type="string" required>
+  S3 bucket name to use as the backend.
+</ParamField>
+
+### AWS S3 Example
+
+```json
+{
+  "experimental_cloud_object_store": {
+    "provider": "aws",
+    "region": "eu-north-1",
+    "bucket": "crossplane-bucket-af79aeca9",
+    "key_prefix": "test-prefix-index/",
+    "retry": {
+      "max_retries": 6,
+      "delay": 0.3,
+      "jitter": 0.5
+    },
+    "multipart_max_concurrent_uploads": 10
+  }
+}
+```
+
+## Google Cloud Storage Configuration
+
+<ParamField path="provider" type="string" required>
+  Set to `"gcs"` for Google Cloud Storage.
+</ParamField>
+
+<ParamField path="bucket" type="string" required>
+  GCS bucket name to use as the backend.
+</ParamField>
+
+<ParamField path="resumable_chunk_size" type="number" default="2097152">
+  Chunk size for resumable uploads in bytes.
+  
+  Default: 2MB (2097152 bytes)
+</ParamField>
+
+<ParamField path="authentication_required" type="boolean" default="false">
+  Error if authentication was not found.
+  
+  Default: false
+</ParamField>
+
+<ParamField path="connection_timeout_s" type="number" default="3000">
+  Connection timeout in milliseconds.
+  
+  Default: 3000ms (3 seconds)
+</ParamField>
+
+<ParamField path="read_timeout_s" type="number" default="3000">
+  Read timeout in milliseconds.
+  
+  Default: 3000ms (3 seconds)
+</ParamField>
+
+### GCS Example
+
+```json
+{
+  "experimental_cloud_object_store": {
+    "provider": "gcs",
+    "bucket": "test-bucket",
+    "key_prefix": "test-prefix-index/",
+    "retry": {
+      "max_retries": 6,
+      "delay": 0.3,
+      "jitter": 0.5
+    },
+    "multipart_max_concurrent_uploads": 10
+  }
+}
+```
+
+## NetApp ONTAP S3 Configuration
+
+<ParamField path="provider" type="string" required>
+  Set to `"ontap"` for NetApp ONTAP S3.
+</ParamField>
+
+<ParamField path="endpoint" type="string" required>
+  The ONTAP S3 endpoint URL.
+  
+  Example: `"https://ontap-s3-endpoint:443"`
+</ParamField>
+
+<ParamField path="vserver_name" type="string" required>
+  The ONTAP vserver name.
+</ParamField>
+
+<ParamField path="bucket" type="string" required>
+  Bucket name in the ONTAP S3 storage.
+</ParamField>
+
+<ParamField path="root_certificates" type="string">
+  Path to the root certificates file for TLS verification.
+  
+  Optional - if not provided, system certificates will be used.
+</ParamField>
+
+### ONTAP Credentials
+
+ONTAP S3 uses AWS environment variables for credentials:
+- `AWS_ACCESS_KEY_ID`
+- `AWS_SECRET_ACCESS_KEY`
+- `AWS_DEFAULT_REGION`
+
+### ONTAP Example
+
+```json
+{
+  "experimental_cloud_object_store": {
+    "provider": "ontap",
+    "endpoint": "https://ontap-s3-endpoint:443",
+    "vserver_name": "your-vserver",
+    "bucket": "your-bucket",
+    "root_certificates": "/path/to/certs.pem",
+    "key_prefix": "test-prefix/",
+    "retry": {
+      "max_retries": 6,
+      "delay": 0.3,
+      "jitter": 0.5
+    },
+    "multipart_max_concurrent_uploads": 10
+  }
+}
+```
+
+## Retry Configuration
+
+Retry configuration uses exponential backoff with jitter. Each iteration applies a jitter as a percentage of the calculated delay.
+
+<ParamField path="retry.max_retries" type="number" default="0">
+  Maximum number of retries until retrying stops.
+  
+  Setting this to zero will attempt once but not retry.
+  
+  Default: 0 (attempt once, no retries)
+</ParamField>
+
+<ParamField path="retry.delay" type="number" default="0">
+  Delay in seconds for exponential backoff.
+  
+  The actual delay for attempt N is: `(2 ^ N) * delay * (1 ± jitter/2)`
+  
+  Default: 0
+</ParamField>
+
+<ParamField path="retry.jitter" type="number" default="0">
+  Amount of jitter to add as a percentage in decimal form (0.0 to 1.0).
+  
+  This randomizes delays to prevent thundering herd problems.
+  
+  Example: 0.5 means ±25% jitter
+  
+  Default: 0
+</ParamField>
+
+### Retry Example Timing
+
+With `max_retries: 7`, `delay: 0.1`, `jitter: 0.5`:
+
+| Attempt | Delay Range |
+|---------|-------------|
+| 1 | 0ms |
+| 2 | 75ms - 125ms |
+| 3 | 150ms - 250ms |
+| 4 | 300ms - 500ms |
+| 5 | 600ms - 1s |
+| 6 | 1.2s - 2s |
+| 7 | 2.4s - 4s |
+| 8 | 4.8s - 8s |
+
+Total cumulative delay: 9.525s - 15.875s
+
+## Multipart Upload Details
+
+### Constraints
+
+- **Minimum part size**: 5MB (except last part)
+- **Maximum part size**: 5GB
+- **Maximum parts per upload**: 10,000
+
+### Upload Strategy
+
+The store automatically uses multipart uploads for large objects:
+1. Initiates multipart upload
+2. Uploads parts concurrently (up to `multipart_max_concurrent_uploads`)
+3. Completes multipart upload
+4. Falls back to simple upload on errors if data is buffered
+
+## Best Practices
+
+<Tip>
+  **Use with FastSlow store**: Combine S3 as the slow tier with a local fast tier (filesystem or memory) for optimal performance.
+</Tip>
+
+<Warning>
+  **Set up lifecycle policies**: Since NativeLink never deletes S3 objects, configure S3 lifecycle policies to expire old objects and control costs.
+</Warning>
+
+<Tip>
+  **Choose the right region**: Select an S3 region geographically close to your compute resources to minimize latency.
+</Tip>
+
+<Tip>
+  **Tune concurrent uploads**: Increase `multipart_max_concurrent_uploads` for better throughput on high-bandwidth connections, but watch memory usage.
+</Tip>
+
+<Note>
+  **Monitor costs**: Track S3 usage (storage, requests, and data transfer) to avoid unexpected costs. Consider S3 Intelligent-Tiering for cost optimization.
+</Note>
+
+<Tip>
+  **Use key_prefix for organization**: Separate different environments or tenants using key prefixes rather than separate buckets.
+</Tip>
+
+## Advanced Configuration Example
+
+```json
+{
+  "fast_slow": {
+    "fast": {
+      "filesystem": {
+        "content_path": "/mnt/ssd/nativelink/content",
+        "temp_path": "/mnt/ssd/nativelink/temp",
+        "eviction_policy": {
+          "max_bytes": "100gb"
+        }
+      }
+    },
+    "slow": {
+      "experimental_cloud_object_store": {
+        "provider": "aws",
+        "region": "us-west-2",
+        "bucket": "nativelink-prod-cache",
+        "key_prefix": "cas/",
+        "retry": {
+          "max_retries": 5,
+          "delay": 0.2,
+          "jitter": 0.5
+        },
+        "max_retry_buffer_per_request": 10485760,
+        "multipart_max_concurrent_uploads": 20
+      }
+    }
+  }
+}
+```

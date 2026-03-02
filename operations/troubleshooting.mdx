@@ -1,0 +1,638 @@
+---
+title: Troubleshooting
+description: Common issues and solutions for NativeLink operations, monitoring, and performance
+---
+
+This guide covers common issues you may encounter when operating NativeLink and provides solutions to resolve them.
+
+## Metrics Not Appearing
+
+### Verify OTEL Configuration
+
+Check that NativeLink is configured with OpenTelemetry environment variables:
+
+```bash
+ps aux | grep nativelink | grep OTEL
+```
+
+You should see:
+- `OTEL_EXPORTER_OTLP_ENDPOINT`
+- `OTEL_EXPORTER_OTLP_PROTOCOL`
+- `OTEL_SERVICE_NAME`
+
+<Accordion title="If variables are missing">
+  Set the required environment variables before starting NativeLink:
+
+  ```bash
+  export OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4317
+  export OTEL_EXPORTER_OTLP_PROTOCOL=grpc
+  export OTEL_SERVICE_NAME=nativelink
+  export OTEL_RESOURCE_ATTRIBUTES="deployment.environment=dev"
+  ```
+
+  Then restart NativeLink.
+</Accordion>
+
+### Check Collector Health
+
+Verify the OTEL Collector is receiving metrics:
+
+```bash
+# Check collector health
+curl http://localhost:13133/health
+
+# Check received metric points
+curl http://localhost:8888/metrics | grep otelcol_receiver_accepted_metric_points
+```
+
+<Accordion title="If collector is not receiving metrics">
+  1. Check NativeLink logs for connection errors
+  2. Verify network connectivity to collector endpoint
+  3. Check firewall rules allow traffic on port 4317 (gRPC) or 4318 (HTTP)
+  4. Ensure collector is running: `docker ps | grep otel-collector`
+</Accordion>
+
+### Inspect Collector Logs
+
+```bash
+# Docker Compose
+docker logs otel-collector
+
+# Kubernetes
+kubectl logs -l app=otel-collector
+```
+
+Look for:
+- Connection errors from receivers
+- Export errors to Prometheus
+- Resource exhaustion warnings
+
+## Cache Metrics Missing
+
+If you see `nativelink_execution_*` metrics but no `nativelink_cache_*` metrics:
+
+<Warning>
+Your NativeLink build may not be emitting store-level cache operation metrics yet. Cache recording rules like `nativelink:cache_hit_rate` won't produce any series without cache metrics.
+</Warning>
+
+### Workaround
+
+Use execution cache hit metrics instead:
+
+```promql
+# Cache hit rate from execution results
+sum(rate(nativelink_execution_completed_count_total{execution_result="cache_hit"}[5m])) /
+sum(rate(nativelink_execution_completed_count_total[5m]))
+```
+
+## High Memory Usage
+
+### Adjust Collector Batch Size
+
+Reduce memory usage by decreasing batch size:
+
+```yaml otel-collector-config.yaml
+processors:
+  batch:
+    send_batch_size: 512  # Reduced from 1024
+    send_batch_max_size: 1024  # Reduced from 2048
+```
+
+### Increase Memory Limits
+
+Increase memory limiter threshold:
+
+```yaml otel-collector-config.yaml
+processors:
+  memory_limiter:
+    limit_mib: 1024  # Increased from 512
+    spike_limit_mib: 256  # Increased from 128
+```
+
+### Reduce Metric Cardinality
+
+Drop high-cardinality labels:
+
+```yaml otel-collector-config.yaml
+processors:
+  attributes:
+    actions:
+      - key: execution_action_digest
+        action: delete
+      - key: high_cardinality_label
+        action: delete
+```
+
+<Info>
+See the [Metrics Reference](/operations/metrics#metric-cardinality) for guidance on identifying high-cardinality labels.
+</Info>
+
+## Out-of-Order Samples
+
+If Prometheus logs show "out of order sample" errors:
+
+```
+level=warn msg="Error on ingesting out-of-order samples" num_dropped=42
+```
+
+### Enable Out-of-Order Ingestion
+
+```yaml prometheus-config.yaml
+storage:
+  tsdb:
+    out_of_order_time_window: 1h  # Increased from 30m
+```
+
+Or start Prometheus with:
+
+```bash
+prometheus --storage.tsdb.out-of-order-time-window=1h
+```
+
+<Accordion title="Why this happens">
+  Out-of-order samples occur when:
+  - Multiple NativeLink instances export metrics with slightly different timestamps
+  - Network delays cause metrics to arrive out of sequence
+  - Clock skew between instances
+
+  Setting a larger time window allows Prometheus to accept samples that arrive late.
+</Accordion>
+
+## Worker Connection Issues
+
+### Workers Not Connecting to Scheduler
+
+**Error**: "No workers available" in scheduler logs
+
+```bash
+# Check worker logs
+kubectl logs -l app=nativelink-worker
+```
+
+Common causes:
+
+<Accordion title="Network connectivity">
+  Verify worker can reach scheduler:
+
+  ```bash
+  # From worker pod/container
+  curl http://nativelink-scheduler:50051/status
+  ```
+
+  Check:
+  - DNS resolution of scheduler hostname
+  - Network policies allow traffic
+  - Firewall rules permit connection
+</Accordion>
+
+<Accordion title="Configuration mismatch">
+  Ensure worker and scheduler have matching:
+  - Instance names
+  - Platform properties
+  - Authentication settings
+
+  Check worker config:
+
+  ```json
+  {
+    "worker": {
+      "scheduler_endpoint": "grpc://nativelink-scheduler:50051"
+    }
+  }
+  ```
+</Accordion>
+
+<Accordion title="Worker timeout">
+  Workers are removed after `worker_timeout_s` (default 5s) without keepalive.
+
+  Increase timeout in scheduler config:
+
+  ```json
+  {
+    "schedulers": {
+      "main": {
+        "simple": {
+          "worker_timeout_s": 30
+        }
+      }
+    }
+  }
+  ```
+</Accordion>
+
+### Worker Disconnecting Frequently
+
+**Error**: Workers show as connected then quickly disconnect
+
+Check for:
+
+1. **Resource exhaustion** on worker nodes
+   ```bash
+   kubectl top nodes
+   kubectl describe node <node-name>
+   ```
+
+2. **Worker OOM kills**
+   ```bash
+   kubectl get events --field-selector involvedObject.name=<worker-pod>
+   ```
+
+3. **Network instability**
+   - Check for packet loss
+   - Verify network quality between worker and scheduler
+
+## Execution Failures
+
+### Actions Timing Out
+
+**Error**: `execution_result="timeout"`
+
+<Accordion title="Check action timeout configuration">
+  Increase timeouts in scheduler config:
+
+  ```json
+  {
+    "schedulers": {
+      "main": {
+        "simple": {
+          "client_action_timeout_s": 300,
+          "max_action_executing_timeout_s": 600
+        }
+      }
+    }
+  }
+  ```
+
+  - `client_action_timeout_s`: Max time without client updates
+  - `max_action_executing_timeout_s`: Max execution time on worker
+</Accordion>
+
+<Accordion title="Worker stuck on actions">
+  If workers are alive but actions time out:
+
+  1. Check worker resource utilization
+  2. Review action logs for hangs
+  3. Enable `max_action_executing_timeout_s` to re-queue stuck actions:
+
+  ```json
+  {
+    "max_action_executing_timeout_s": 600
+  }
+  ```
+</Accordion>
+
+### High Retry Rate
+
+**Symptom**: `nativelink_execution_retry_count_total` increasing rapidly
+
+<Accordion title="Check for failing workers">
+  Query metrics for worker-specific failures:
+
+  ```promql
+  rate(nativelink_execution_completed_count_total{execution_result="failure"}[5m])
+  ```
+
+  If failures are concentrated on specific workers:
+  1. Drain the problematic worker
+  2. Check worker logs for errors
+  3. Verify worker has required dependencies
+</Accordion>
+
+<Accordion title="Reduce max retries">
+  Prevent infinite retries by lowering threshold:
+
+  ```json
+  {
+    "schedulers": {
+      "main": {
+        "simple": {
+          "max_job_retries": 2
+        }
+      }
+    }
+  }
+  ```
+
+  Default is 3. Actions exceeding this limit will return the last error to the client.
+</Accordion>
+
+## Cache Issues
+
+### Low Cache Hit Rate
+
+**Symptom**: Cache hit rate below expected threshold
+
+```promql
+nativelink:cache_hit_rate < 0.5
+```
+
+<Accordion title="Check cache size limits">
+  Verify cache isn't evicting entries prematurely:
+
+  ```promql
+  # Cache size utilization
+  nativelink_cache_size / <max_cache_size>
+  ```
+
+  If consistently at 100%, increase cache size:
+
+  ```json
+  {
+    "stores": {
+      "CAS_MAIN_STORE": {
+        "memory": {
+          "eviction_policy": {
+            "max_bytes": "10gb"  // Increased
+          }
+        }
+      }
+    }
+  }
+  ```
+</Accordion>
+
+<Accordion title="Review eviction rates">
+  High eviction rates indicate undersized cache:
+
+  ```promql
+  rate(nativelink_cache_operations_total{cache_operation_name="evict"}[5m])
+  ```
+
+  Solutions:
+  - Increase cache size
+  - Use tiered storage (FastSlow store)
+  - Implement size partitioning for large objects
+</Accordion>
+
+<Accordion title="Verify cache key consistency">
+  Inconsistent action keys reduce hit rate:
+  - Check for non-deterministic build inputs
+  - Verify platform properties match across builds
+  - Review action digest computation
+</Accordion>
+
+### Cache Operation Errors
+
+**Error**: `cache_operation_result="error"`
+
+```bash
+# Find error patterns in logs
+kubectl logs -l app=nativelink | grep -i "cache error"
+```
+
+<Accordion title="Filesystem store errors">
+  Common filesystem issues:
+
+  **Disk full**:
+  ```bash
+  df -h /path/to/cache
+  ```
+
+  **Permission denied**:
+  ```bash
+  ls -la /path/to/cache
+  # Ensure NativeLink user has write permissions
+  ```
+
+  **I/O errors**:
+  ```bash
+  dmesg | grep -i error
+  # Check for disk hardware issues
+  ```
+</Accordion>
+
+<Accordion title="S3/Cloud store errors">
+  **Authentication failures**:
+  - Verify AWS credentials are valid
+  - Check IAM permissions for bucket access
+  - Ensure credentials haven't expired
+
+  **Network timeouts**:
+  ```json
+  {
+    "stores": {
+      "S3_STORE": {
+        "experimental_cloud_object_store": {
+          "retry": {
+            "max_retries": 6,
+            "delay": 0.3
+          }
+        }
+      }
+    }
+  }
+  ```
+</Accordion>
+
+<Accordion title="Redis store errors">
+  **Connection refused**:
+  ```bash
+  # Test Redis connectivity
+  redis-cli -h <redis-host> -p 6379 ping
+  ```
+
+  **Out of memory**:
+  ```bash
+  redis-cli info memory
+  ```
+
+  Increase Redis max memory or enable eviction:
+  ```bash
+  redis-cli CONFIG SET maxmemory-policy allkeys-lru
+  ```
+</Accordion>
+
+## Performance Issues
+
+### High Queue Depth
+
+**Symptom**: `nativelink:queue_depth` consistently high
+
+```promql
+nativelink:queue_depth > 100
+```
+
+<Accordion title="Scale workers">
+  Add more worker capacity:
+
+  ```bash
+  # Kubernetes
+  kubectl scale deployment nativelink-worker --replicas=10
+  ```
+
+  Monitor worker utilization:
+  ```promql
+  nativelink:worker_utilization
+  ```
+</Accordion>
+
+<Accordion title="Optimize worker allocation">
+  Change allocation strategy in scheduler:
+
+  ```json
+  {
+    "schedulers": {
+      "main": {
+        "simple": {
+          "allocation_strategy": "most_recently_used"
+        }
+      }
+    }
+  }
+  ```
+
+  - `least_recently_used`: Distribute evenly (default)
+  - `most_recently_used`: Maximize cache locality
+</Accordion>
+
+### Slow Cache Operations
+
+**Symptom**: High P95 cache latency
+
+```promql
+nativelink:cache_operation_latency_p95 > 1000  # 1 second
+```
+
+<Accordion title="Use tiered storage">
+  Implement FastSlow store for hot/cold data:
+
+  ```json
+  {
+    "stores": {
+      "TIERED_CAS": {
+        "fast_slow": {
+          "fast": {
+            "memory": {
+              "eviction_policy": {"max_bytes": "5gb"}
+            }
+          },
+          "slow": {
+            "filesystem": {
+              "content_path": "/var/cache/nativelink",
+              "eviction_policy": {"max_bytes": "100gb"}
+            }
+          }
+        }
+      }
+    }
+  }
+  ```
+</Accordion>
+
+<Accordion title="Enable compression">
+  Reduce I/O for network-backed stores:
+
+  ```json
+  {
+    "stores": {
+      "COMPRESSED_CAS": {
+        "compression": {
+          "compression_algorithm": {"lz4": {}},
+          "backend": {/* underlying store */}
+        }
+      }
+    }
+  }
+  ```
+
+  Note: Adds CPU overhead but reduces network transfer.
+</Accordion>
+
+## Alert Rules
+
+Add these alert rules to catch issues early:
+
+### High Error Rate
+
+```yaml prometheus-alerts.yml
+groups:
+  - name: nativelink_alerts
+    rules:
+      - alert: HighExecutionErrorRate
+        expr: |
+          (1 - (
+            sum(rate(nativelink_execution_completed_count_total{execution_result="success"}[5m])) /
+            sum(rate(nativelink_execution_completed_count_total[5m]))
+          )) > 0.05
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High execution error rate ({{ $value | humanizePercentage }})"
+          description: "More than 5% of executions are failing"
+```
+
+### Cache Miss Rate High
+
+```yaml
+- alert: CacheMissRateHigh
+  expr: |
+    (1 - nativelink:cache_hit_rate) > 0.5
+  for: 10m
+  labels:
+    severity: info
+  annotations:
+    summary: "Cache miss rate above 50% for {{ $labels.cache_type }}"
+    description: "Consider increasing cache size or reviewing cache key consistency"
+```
+
+### Queue Backlog
+
+```yaml
+- alert: QueueBacklog
+  expr: |
+    sum(nativelink_execution_active_count{execution_stage="queued"}) > 100
+  for: 15m
+  labels:
+    severity: warning
+  annotations:
+    summary: "Queue backlog above 100 actions"
+    description: "Consider scaling workers or investigating slow executions"
+```
+
+### Worker Utilization Low
+
+```yaml
+- alert: WorkerUtilizationLow
+  expr: |
+    nativelink:worker_utilization < 0.3
+  for: 30m
+  labels:
+    severity: info
+  annotations:
+    summary: "Worker utilization below 30%"
+    description: "Workers may be overprovisioned or queue is empty"
+```
+
+### Component Health Failed
+
+```yaml
+- alert: ComponentHealthFailed
+  expr: |
+    up{job="nativelink"} == 0
+  for: 5m
+  labels:
+    severity: critical
+  annotations:
+    summary: "NativeLink component is down"
+    description: "Health check endpoint returning 503 or unreachable"
+```
+
+## Getting Help
+
+If you're still experiencing issues:
+
+<CardGroup cols={2}>
+  <Card title="GitHub Issues" icon="github" href="https://github.com/TraceMachina/nativelink/issues">
+    Report bugs or request features
+  </Card>
+  <Card title="Discord Community" icon="discord" href="https://discord.gg/nativelink">
+    Get help from the community
+  </Card>
+  <Card title="Documentation" icon="book" href="https://nativelink.com/docs">
+    Browse full documentation
+  </Card>
+  <Card title="Performance Tuning" icon="gauge-high" href="/operations/performance-tuning">
+    Optimize your deployment
+  </Card>
+</CardGroup>

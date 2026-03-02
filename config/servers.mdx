@@ -1,0 +1,440 @@
+---
+title: Server Configuration
+description: Server and service endpoint configuration for NativeLink
+---
+
+Servers define network listeners and expose NativeLink services.
+
+## Server Definition
+
+<ParamField path="name" type="string">
+  Server identifier for logging and telemetry. Defaults to index in servers array.
+</ParamField>
+
+<ParamField path="listener" type="object" required>
+  Network listener configuration.
+</ParamField>
+
+<ParamField path="services" type="object">
+  Services to expose on this server.
+</ParamField>
+
+## Listener Configuration
+
+<Tabs>
+  <Tab title="HTTP">
+    HTTP/HTTPS/HTTP2 listener.
+    
+    ```json5
+    {
+      listener: {
+        http: {
+          socket_address: "0.0.0.0:50051",
+          tls: {
+            cert_file: "/etc/certs/server.crt",
+            key_file: "/etc/certs/server.key"
+          }
+        }
+      }
+    }
+    ```
+    
+    <ParamField path="socket_address" type="string" required>
+      Bind address. Examples:
+      - `0.0.0.0:50051` - All interfaces on port 50051
+      - `127.0.0.1:8080` - Localhost only
+      - `:50051` - All interfaces (shorthand)
+    </ParamField>
+    
+    <ParamField path="tls" type="object">
+      TLS configuration.
+      
+      <Expandable title="tls properties">
+        <ParamField path="cert_file" type="string" required>
+          Server certificate file path.
+        </ParamField>
+        
+        <ParamField path="key_file" type="string" required>
+          Private key file path.
+        </ParamField>
+        
+        <ParamField path="client_ca_file" type="string">
+          Client CA for mutual TLS (mTLS).
+        </ParamField>
+        
+        <ParamField path="client_crl_file" type="string">
+          Certificate revocation list for mTLS.
+        </ParamField>
+      </Expandable>
+    </ParamField>
+    
+    <ParamField path="compression" type="object">
+      HTTP compression configuration.
+      
+      <Expandable title="compression properties">
+        <ParamField path="send_compression_algorithm" type="enum">
+          Server response compression.
+          
+          Options: `none`, `gzip`
+        </ParamField>
+        
+        <ParamField path="accepted_compression_algorithms" type="array">
+          Accept compressed requests from clients.
+          
+          ```json5
+          accepted_compression_algorithms: ["gzip"]
+          ```
+        </ParamField>
+      </Expandable>
+    </ParamField>
+    
+    <ParamField path="max_decoding_message_size" type="number" default="4194304">
+      Maximum GRPC message decode size (bytes). Default: 4MB.
+    </ParamField>
+    
+    <ParamField path="advanced_http" type="object">
+      Advanced HTTP/2 tuning parameters.
+      
+      <Expandable title="http2 properties">
+        <ParamField path="http2_keep_alive_interval" type="number">
+          HTTP/2 keepalive ping interval (seconds).
+        </ParamField>
+        
+        <ParamField path="experimental_http2_max_concurrent_streams" type="number">
+          Maximum concurrent HTTP/2 streams.
+        </ParamField>
+        
+        <ParamField path="experimental_http2_initial_stream_window_size" type="number">
+          Initial HTTP/2 stream window size (bytes).
+        </ParamField>
+        
+        <ParamField path="experimental_http2_initial_connection_window_size" type="number">
+          Initial HTTP/2 connection window size (bytes).
+        </ParamField>
+        
+        <ParamField path="experimental_http2_adaptive_window" type="boolean">
+          Enable adaptive window sizing.
+        </ParamField>
+        
+        <ParamField path="experimental_http2_max_frame_size" type="number">
+          Maximum HTTP/2 frame size (bytes).
+        </ParamField>
+        
+        <ParamField path="experimental_http2_keep_alive_timeout" type="number">
+          HTTP/2 keepalive timeout (seconds).
+        </ParamField>
+        
+        <ParamField path="experimental_http2_max_send_buf_size" type="number">
+          Maximum send buffer size (bytes).
+        </ParamField>
+      </Expandable>
+    </ParamField>
+  </Tab>
+</Tabs>
+
+## Services
+
+Services expose Remote Execution API and administrative endpoints.
+
+<Tabs>
+  <Tab title="CAS">
+    Content Addressable Storage service.
+    
+    ```json5
+    {
+      services: {
+        cas: [
+          {
+            instance_name: "main",
+            cas_store: "CAS_STORE"
+          }
+        ]
+      }
+    }
+    ```
+    
+    <ParamField path="instance_name" type="string" default="">
+      Remote Execution API instance name. Clients specify via `--remote_instance_name`.
+    </ParamField>
+    
+    <ParamField path="cas_store" type="string" required>
+      Reference to CAS store.
+    </ParamField>
+  </Tab>
+  
+  <Tab title="ActionCache">
+    Action Cache service.
+    
+    ```json5
+    {
+      services: {
+        ac: [
+          {
+            instance_name: "main",
+            ac_store: "AC_STORE",
+            read_only: false
+          }
+        ]
+      }
+    }
+    ```
+    
+    <ParamField path="instance_name" type="string" default="">
+      Remote Execution API instance name.
+    </ParamField>
+    
+    <ParamField path="ac_store" type="string" required>
+      Reference to Action Cache store.
+    </ParamField>
+    
+    <ParamField path="read_only" type="boolean" default="false">
+      Disable writes to Action Cache.
+    </ParamField>
+  </Tab>
+  
+  <Tab title="Execution">
+    Remote Execution service.
+    
+    ```json5
+    {
+      services: {
+        execution: [
+          {
+            instance_name: "main",
+            cas_store: "CAS_STORE",
+            scheduler: "MAIN_SCHEDULER"
+          }
+        ]
+      }
+    }
+    ```
+    
+    <ParamField path="instance_name" type="string" default="">
+      Instance name.
+    </ParamField>
+    
+    <ParamField path="cas_store" type="string" required>
+      CAS store for action inputs/outputs.
+    </ParamField>
+    
+    <ParamField path="scheduler" type="string" required>
+      Scheduler to submit tasks to.
+    </ParamField>
+  </Tab>
+  
+  <Tab title="Capabilities">
+    Server capabilities service.
+    
+    ```json5
+    {
+      services: {
+        capabilities: [
+          {
+            instance_name: "main",
+            remote_execution: {
+              scheduler: "MAIN_SCHEDULER"
+            }
+          }
+        ]
+      }
+    }
+    ```
+    
+    <ParamField path="instance_name" type="string" default="">
+      Instance name.
+    </ParamField>
+    
+    <ParamField path="remote_execution" type="object">
+      Remote execution capability.
+      
+      <Expandable title="properties">
+        <ParamField path="scheduler" type="string" required>
+          Scheduler reference for capability information.
+        </ParamField>
+      </Expandable>
+    </ParamField>
+  </Tab>
+  
+  <Tab title="ByteStream">
+    Streaming upload/download service.
+    
+    ```json5
+    {
+      services: {
+        bytestream: [
+          {
+            instance_name: "main",
+            cas_store: "CAS_STORE",
+            max_bytes_per_stream: "64kb",
+            persist_stream_on_disconnect_timeout: 10
+          }
+        ]
+      }
+    }
+    ```
+    
+    <ParamField path="instance_name" type="string" default="">
+      Instance name.
+    </ParamField>
+    
+    <ParamField path="cas_store" type="string" required>
+      CAS store for streaming.
+    </ParamField>
+    
+    <ParamField path="max_bytes_per_stream" type="number" default="65536">
+      Chunk size per stream (bytes). Optimal: 16KB-64KB.
+    </ParamField>
+    
+    <ParamField path="persist_stream_on_disconnect_timeout" type="number" default="10">
+      Seconds to keep upload stream open after client disconnect for resume.
+    </ParamField>
+  </Tab>
+  
+  <Tab title="WorkerAPI">
+    Worker registration and communication service.
+    
+    ```json5
+    {
+      services: {
+        worker_api: {
+          scheduler: "MAIN_SCHEDULER"
+        }
+      }
+    }
+    ```
+    
+    <Warning>
+      Serve WorkerAPI on a separate non-public port. Workers have different permissions than clients.
+    </Warning>
+    
+    <ParamField path="scheduler" type="string" required>
+      Scheduler workers connect to.
+    </ParamField>
+  </Tab>
+  
+  <Tab title="Admin">
+    Administrative REST API.
+    
+    ```json5
+    {
+      services: {
+        admin: {
+          path: "/admin"
+        }
+      }
+    }
+    ```
+    
+    <ParamField path="path" type="string" default="/admin">
+      HTTP path for admin endpoint.
+    </ParamField>
+  </Tab>
+  
+  <Tab title="Health">
+    Health check endpoint.
+    
+    ```json5
+    {
+      services: {
+        health: {
+          path: "/status",
+          timeout_seconds: 5
+        }
+      }
+    }
+    ```
+    
+    <ParamField path="path" type="string" default="/status">
+      HTTP path for health endpoint.
+    </ParamField>
+    
+    <ParamField path="timeout_seconds" type="number" default="5">
+      Health check timeout.
+    </ParamField>
+  </Tab>
+</Tabs>
+
+## Multiple Instances
+
+Services can serve multiple instances with different configurations:
+
+```json5
+{
+  services: {
+    cas: [
+      { instance_name: "dev", cas_store: "DEV_STORE" },
+      { instance_name: "prod", cas_store: "PROD_STORE" }
+    ],
+    ac: [
+      { instance_name: "dev", ac_store: "DEV_AC" },
+      { instance_name: "prod", ac_store: "PROD_AC" }
+    ]
+  }
+}
+```
+
+## Example Configurations
+
+### Public CAS/AC Server
+
+```json5
+{
+  name: "public",
+  listener: {
+    http: {
+      socket_address: "0.0.0.0:50051"
+    }
+  },
+  services: {
+    cas: [{ cas_store: "CAS_MAIN" }],
+    ac: [{ ac_store: "AC_MAIN" }],
+    bytestream: [{ cas_store: "CAS_MAIN" }],
+    capabilities: [{}],
+    health: {}
+  }
+}
+```
+
+### Scheduler Server
+
+```json5
+{
+  name: "scheduler",
+  listener: {
+    http: {
+      socket_address: "0.0.0.0:50052"
+    }
+  },
+  services: {
+    execution: [{
+      cas_store: "CAS_MAIN",
+      scheduler: "MAIN_SCHEDULER"
+    }],
+    capabilities: [{
+      remote_execution: {
+        scheduler: "MAIN_SCHEDULER"
+      }
+    }]
+  }
+}
+```
+
+### Worker API Server (Internal)
+
+```json5
+{
+  name: "workers",
+  listener: {
+    http: {
+      socket_address: "127.0.0.1:50061"  // Localhost only
+    }
+  },
+  services: {
+    worker_api: {
+      scheduler: "MAIN_SCHEDULER"
+    },
+    admin: {},
+    health: {}
+  }
+}
+```

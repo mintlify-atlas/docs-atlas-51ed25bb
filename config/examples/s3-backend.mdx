@@ -1,0 +1,431 @@
+---
+title: S3 Storage Backend
+description: Configure NativeLink with AWS S3 (or S3-compatible) object storage for scalable, durable cache storage
+---
+
+This example demonstrates how to configure NativeLink with AWS S3 as the backend storage. This setup uses a fast-slow store pattern with in-memory caching for frequently accessed objects and S3 for durable persistence.
+
+## Complete Configuration
+
+```json5
+{
+  stores: [
+    {
+      name: "CAS_MAIN_STORE",
+      verify: {
+        verify_size: true,
+        backend: {
+          dedup: {
+            index_store: {
+              fast_slow: {
+                fast: {
+                  memory: {
+                    eviction_policy: {
+                      max_bytes: "100mb",
+                    },
+                  },
+                },
+                slow: {
+                  experimental_cloud_object_store: {
+                    provider: "aws",
+                    region: "eu-central-1",
+                    bucket: "mybucket-1b19581ba67b64d50b4325d1727205756",
+                    key_prefix: "test-prefix-index/",
+                    retry: {
+                      max_retries: 6,
+                      delay: 0.3,
+                      jitter: 0.5,
+                    },
+                  },
+                },
+              },
+            },
+            content_store: {
+              compression: {
+                compression_algorithm: {
+                  lz4: {},
+                },
+                backend: {
+                  fast_slow: {
+                    fast: {
+                      memory: {
+                        eviction_policy: {
+                          max_bytes: "100mb",
+                        },
+                      },
+                    },
+                    slow: {
+                      experimental_cloud_object_store: {
+                        provider: "aws",
+                        region: "eu-central-1",
+                        bucket: "mybucket-1b19581ba67b64d50b4325d1727205756",
+                        key_prefix: "test-prefix-dedup-cas/",
+                        retry: {
+                          max_retries: 6,
+                          delay: 0.3,
+                          jitter: 0.5,
+                        },
+                      },
+                    },
+                  },
+                },
+              },
+            },
+          },
+        },
+      },
+    },
+    {
+      name: "AC_MAIN_STORE",
+      fast_slow: {
+        fast: {
+          memory: {
+            eviction_policy: {
+              max_bytes: "100mb",
+            },
+          },
+        },
+        slow: {
+          experimental_cloud_object_store: {
+            provider: "aws",
+            region: "eu-central-1",
+            bucket: "mybucket-1b19581ba67b64d50b4325d1727205756",
+            key_prefix: "test-prefix-ac/",
+            retry: {
+              max_retries: 6,
+              delay: 0.3,
+              jitter: 0.5,
+            },
+          },
+        },
+      },
+    },
+  ],
+  schedulers: [
+    {
+      name: "MAIN_SCHEDULER",
+      simple: {
+        supported_platform_properties: {
+          cpu_count: "minimum",
+          memory_kb: "minimum",
+          ISA: "exact",
+          docker_image: "priority",
+          "lre-rs": "priority",
+        },
+      },
+    },
+  ],
+  servers: [
+    {
+      listener: {
+        http: {
+          socket_address: "0.0.0.0:50051",
+        },
+      },
+      services: {
+        cas: [
+          {
+            instance_name: "main",
+            cas_store: "CAS_MAIN_STORE",
+          },
+        ],
+        ac: [
+          {
+            instance_name: "main",
+            ac_store: "AC_MAIN_STORE",
+          },
+        ],
+        execution: [
+          {
+            instance_name: "main",
+            cas_store: "CAS_MAIN_STORE",
+            scheduler: "MAIN_SCHEDULER",
+          },
+        ],
+        capabilities: [
+          {
+            instance_name: "main",
+            remote_execution: {
+              scheduler: "MAIN_SCHEDULER",
+            },
+          },
+        ],
+        bytestream: {
+          cas_stores: {
+            main: "CAS_MAIN_STORE",
+          },
+        },
+        health: {},
+      },
+    },
+  ],
+}
+```
+
+## Architecture Patterns
+
+### Deduplication Store
+
+The CAS uses a deduplication store that separates index metadata from content:
+
+```json5
+dedup: {
+  index_store: {
+    // Stores small index entries mapping hashes to content locations
+  },
+  content_store: {
+    // Stores actual deduplicated content chunks
+  },
+}
+```
+
+<Note>
+**Why Deduplication?** Build artifacts often contain duplicate data across different objects. Deduplication stores content chunks once and uses an index to map multiple object hashes to shared chunks, reducing storage costs.
+</Note>
+
+### Fast-Slow Store Pattern
+
+Each store uses a two-tier caching strategy:
+
+```json5
+fast_slow: {
+  fast: {
+    memory: {
+      eviction_policy: { max_bytes: "100mb" },
+    },
+  },
+  slow: {
+    experimental_cloud_object_store: {
+      provider: "aws",
+      // S3 configuration
+    },
+  },
+}
+```
+
+**Read path**: Check memory cache → Check S3 → Cache in memory
+**Write path**: Write to memory → Asynchronously write to S3
+
+### Compression
+
+The content store uses LZ4 compression before storing to S3:
+
+```json5
+compression: {
+  compression_algorithm: {
+    lz4: {},
+  },
+  backend: {
+    // Fast-slow store configuration
+  },
+}
+```
+
+<Note>
+**LZ4 Benefits**: Extremely fast compression/decompression with moderate compression ratios. Ideal for build artifacts where speed is more important than maximum compression.
+</Note>
+
+## S3 Configuration
+
+### Provider Options
+
+<CodeGroup>
+
+```json5 AWS S3
+experimental_cloud_object_store: {
+  provider: "aws",
+  region: "us-east-1",
+  bucket: "my-nativelink-cache",
+  key_prefix: "cas/",
+}
+```
+
+```json5 MinIO
+experimental_cloud_object_store: {
+  provider: "minio",
+  endpoint: "http://minio.example.com:9000",
+  bucket: "nativelink-cache",
+  key_prefix: "cas/",
+}
+```
+
+```json5 Google Cloud Storage
+experimental_cloud_object_store: {
+  provider: "gcp",
+  bucket: "my-nativelink-cache",
+  key_prefix: "cas/",
+}
+```
+
+</CodeGroup>
+
+### Retry Configuration
+
+```json5
+retry: {
+  max_retries: 6,      // Maximum number of retry attempts
+  delay: 0.3,          // Initial delay in seconds (300ms)
+  jitter: 0.5,         // Random jitter factor (0.0-1.0)
+}
+```
+
+<Note>
+**Exponential Backoff**: Retries use exponential backoff with jitter to avoid thundering herd problems. With `max_retries: 6` and `delay: 0.3`, maximum delay is approximately 9.6 seconds.
+</Note>
+
+### Key Prefix Organization
+
+Use different prefixes to organize data:
+
+```json5
+// Index metadata
+key_prefix: "prod/index/"
+
+// Deduplicated content
+key_prefix: "prod/content/"
+
+// Action cache
+key_prefix: "prod/ac/"
+```
+
+This allows:
+- Environment separation (prod/, staging/, dev/)
+- Independent lifecycle policies per prefix
+- Cost tracking by prefix
+
+## AWS Credentials
+
+NativeLink uses the standard AWS credential chain:
+
+1. Environment variables (`AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`)
+2. Shared credentials file (`~/.aws/credentials`)
+3. IAM instance profile (EC2/ECS)
+4. IAM role (EKS with IRSA)
+
+### Required IAM Permissions
+
+```json
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Effect": "Allow",
+      "Action": [
+        "s3:GetObject",
+        "s3:PutObject",
+        "s3:DeleteObject",
+        "s3:ListBucket"
+      ],
+      "Resource": [
+        "arn:aws:s3:::my-nativelink-cache",
+        "arn:aws:s3:::my-nativelink-cache/*"
+      ]
+    }
+  ]
+}
+```
+
+## Filesystem Alternative
+
+For local SSD caching instead of memory:
+
+```json5
+fast_slow: {
+  fast: {
+    filesystem: {
+      content_path: "/tmp/nativelink/data/content_path-index",
+      temp_path: "/tmp/nativelink/data/tmp_path-index",
+      eviction_policy: {
+        max_bytes: "500mb",
+      },
+    },
+  },
+  slow: {
+    experimental_cloud_object_store: {
+      // S3 configuration
+    },
+  },
+}
+```
+
+## Performance Tuning
+
+### Memory Cache Size
+
+Adjust based on your working set size:
+
+```json5
+// Small cache for many unique objects
+max_bytes: "100mb"
+
+// Medium cache for moderate reuse
+max_bytes: "1gb"
+
+// Large cache for high reuse patterns
+max_bytes: "10gb"
+```
+
+### S3 Request Concurrency
+
+```json5
+experimental_cloud_object_store: {
+  provider: "aws",
+  region: "us-east-1",
+  bucket: "my-cache",
+  additional_max_concurrent_requests: 100,
+}
+```
+
+<Note>
+Higher concurrency improves throughput for parallel builds but increases memory usage. Start with default settings and increase if S3 becomes a bottleneck.
+</Note>
+
+## Cost Optimization
+
+### S3 Lifecycle Policies
+
+Set up lifecycle rules to transition old objects to cheaper storage:
+
+```bash
+# Transition to Infrequent Access after 30 days
+aws s3api put-bucket-lifecycle-configuration \
+  --bucket my-nativelink-cache \
+  --lifecycle-configuration file://lifecycle.json
+```
+
+```json
+{
+  "Rules": [
+    {
+      "Id": "TransitionOldCache",
+      "Status": "Enabled",
+      "Prefix": "prod/",
+      "Transitions": [
+        {
+          "Days": 30,
+          "StorageClass": "STANDARD_IA"
+        },
+        {
+          "Days": 90,
+          "StorageClass": "GLACIER"
+        }
+      ],
+      "Expiration": {
+        "Days": 180
+      }
+    }
+  ]
+}
+```
+
+### Request Cost Reduction
+
+- Use larger memory cache to reduce S3 GET requests
+- Enable compression to reduce transfer costs
+- Use VPC endpoints to avoid NAT gateway charges
+
+## See Also
+
+- [Basic CAS Configuration](/config/examples/basic-cas) - Local filesystem backend
+- [Multi-Worker Setup](/config/examples/multi-worker) - Distributed execution with S3
+- [Store Types](/config/stores) - Complete store configuration reference

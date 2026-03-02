@@ -1,0 +1,361 @@
+---
+title: Scheduler Configuration
+description: Scheduler configuration reference for NativeLink remote execution
+---
+
+Schedulers manage task distribution to workers for remote execution.
+
+## Scheduler Definition
+
+<ParamField path="name" type="string" required>
+  Unique identifier for the scheduler. Referenced in server execution services and worker configurations.
+</ParamField>
+
+<ParamField path="<type>" type="object" required>
+  Scheduler type and configuration. Only one type can be specified.
+</ParamField>
+
+## Scheduler Types
+
+<Tabs>
+  <Tab title="Simple">
+    Core scheduler for worker task distribution.
+    
+    ```json5
+    {
+      name: "MAIN_SCHEDULER",
+      simple: {
+        supported_platform_properties: {
+          cpu_count: "minimum",
+          cpu_arch: "exact",
+          OSFamily: "priority"
+        },
+        retain_completed_for_s: 60,
+        worker_timeout_s: 5,
+        max_job_retries: 3
+      }
+    }
+    ```
+    
+    <ParamField path="supported_platform_properties" type="object">
+      Map of platform property names to match strategies. Keys must match worker-published capabilities.
+      
+      Property types:
+      - `"minimum"` - Worker value must be >= task value (numeric)
+      - `"exact"` - Worker value must exactly match task value (string)
+      - `"priority"` - Informational, doesn't restrict matching
+      - `"ignore"` - Allows property in tasks without requiring worker support
+      
+      ```json5
+      supported_platform_properties: {
+        cpu_count: "minimum",      // Worker needs >= cores
+        memory_kb: "minimum",      // Worker needs >= memory
+        cpu_arch: "exact",         // Must match exactly (e.g., "x86_64")
+        gpu_model: "exact",        // Must match exactly
+        OSFamily: "priority",      // Preference hint
+        "container-image": "priority"
+      }
+      ```
+    </ParamField>
+    
+    <ParamField path="retain_completed_for_s" type="number" default="60">
+      Seconds to keep completed action results in memory for `WaitExecution` calls.
+    </ParamField>
+    
+    <ParamField path="client_action_timeout_s" type="number" default="60">
+      Mark actions as failed if no client updates within this duration.
+    </ParamField>
+    
+    <ParamField path="worker_timeout_s" type="number" default="5">
+      Remove workers from pool after this many seconds without keepalive.
+    </ParamField>
+    
+    <ParamField path="max_action_executing_timeout_s" type="number" default="0">
+      Maximum time an action can execute without worker updates before timing out and re-queueing. Set to 0 to disable (rely only on worker_timeout_s).
+    </ParamField>
+    
+    <ParamField path="max_job_retries" type="number" default="3">
+      Maximum retries for jobs that fail with internal errors or timeouts.
+    </ParamField>
+    
+    <ParamField path="allocation_strategy" type="enum" default="least_recently_used">
+      Worker selection strategy when multiple workers can run a task.
+      
+      Options:
+      - `least_recently_used` - Prefer idle workers
+      - `most_recently_used` - Prefer active workers
+    </ParamField>
+    
+    <ParamField path="worker_match_logging_interval_s" type="number" default="10">
+      Log worker matching status every N seconds. Set to -1 to disable.
+    </ParamField>
+    
+    <ParamField path="experimental_backend" type="object">
+      Storage backend for scheduler state.
+      
+      <Expandable title="backend types">
+        <ParamField path="memory" type="object">
+          In-memory backend (default, non-persistent).
+          
+          ```json5
+          experimental_backend: "memory"
+          ```
+        </ParamField>
+        
+        <ParamField path="redis" type="object">
+          Redis-backed persistent scheduler.
+          
+          ```json5
+          experimental_backend: {
+            redis: {
+              redis_store: "REDIS_STORE_NAME"
+            }
+          }
+          ```
+          
+          <ParamField path="redis_store" type="string" required>
+            Reference to a `redis_store` configuration.
+          </ParamField>
+        </ParamField>
+      </Expandable>
+    </ParamField>
+  </Tab>
+  
+  <Tab title="GRPC">
+    Forwards scheduling requests to remote scheduler.
+    
+    ```json5
+    {
+      name: "REMOTE_SCHEDULER",
+      grpc: {
+        endpoint: {
+          address: "grpc://scheduler.example.com:50052"
+        },
+        connections_per_endpoint: 5,
+        max_concurrent_requests: 100
+      }
+    }
+    ```
+    
+    <ParamField path="endpoint" type="object" required>
+      Remote scheduler endpoint.
+      
+      <Expandable title="endpoint properties">
+        <ParamField path="address" type="string" required>
+          GRPC endpoint URL (e.g., `grpc://host:port` or `grpcs://host:port`).
+        </ParamField>
+        
+        <ParamField path="tls_config" type="object">
+          TLS configuration for grpcs://.
+          
+          <Expandable title="tls properties">
+            <ParamField path="ca_file" type="string">
+              Certificate authority file path.
+            </ParamField>
+            <ParamField path="cert_file" type="string">
+              Client certificate file path.
+            </ParamField>
+            <ParamField path="key_file" type="string">
+              Client private key file path.
+            </ParamField>
+          </Expandable>
+        </ParamField>
+        
+        <ParamField path="concurrency_limit" type="number">
+          Maximum concurrent requests to this endpoint.
+        </ParamField>
+        
+        <ParamField path="connect_timeout_s" type="number" default="30">
+          TCP connection timeout (seconds).
+        </ParamField>
+        
+        <ParamField path="tcp_keepalive_s" type="number" default="30">
+          TCP keepalive interval (seconds).
+        </ParamField>
+        
+        <ParamField path="http2_keepalive_interval_s" type="number" default="30">
+          HTTP/2 PING interval (seconds).
+        </ParamField>
+        
+        <ParamField path="http2_keepalive_timeout_s" type="number" default="20">
+          HTTP/2 PING timeout (seconds).
+        </ParamField>
+      </Expandable>
+    </ParamField>
+    
+    <ParamField path="retry" type="object">
+      Retry configuration for failed requests.
+      
+      <Expandable title="retry properties">
+        <ParamField path="max_retries" type="number" default="0">
+          Maximum retries (0 = unlimited).
+        </ParamField>
+        <ParamField path="delay" type="number" default="0">
+          Initial delay for exponential backoff (seconds).
+        </ParamField>
+        <ParamField path="jitter" type="number" default="0">
+          Jitter factor (0-1) for randomized delays.
+        </ParamField>
+      </Expandable>
+    </ParamField>
+    
+    <ParamField path="max_concurrent_requests" type="number" default="0">
+      Global concurrent request limit (0 = unlimited). Requests queue when limit is reached.
+    </ParamField>
+    
+    <ParamField path="connections_per_endpoint" type="number" default="1">
+      Number of TCP connections per endpoint for load balancing.
+    </ParamField>
+  </Tab>
+  
+  <Tab title="CacheLookup">
+    Checks Action Cache before delegating to nested scheduler.
+    
+    ```json5
+    {
+      name: "CACHED_SCHEDULER",
+      cache_lookup: {
+        ac_store: "AC_STORE",
+        scheduler: {
+          simple: { /* ... */ }
+        }
+      }
+    }
+    ```
+    
+    <ParamField path="ac_store" type="string" required>
+      Reference to Action Cache store. Should be a `completeness_checking` store to verify result validity.
+    </ParamField>
+    
+    <ParamField path="scheduler" type="object" required>
+      Nested scheduler to use on cache miss.
+    </ParamField>
+  </Tab>
+  
+  <Tab title="PropertyModifier">
+    Modifies action platform properties before scheduling.
+    
+    ```json5
+    {
+      name: "MODIFIED_SCHEDULER",
+      property_modifier: {
+        modifications: [
+          { add: { name: "pool", value: "default" } },
+          { remove: "deprecated_property" },
+          { 
+            replace: {
+              name: "os",
+              value: "linux",
+              new_name: "OSFamily",
+              new_value: "Linux"
+            }
+          }
+        ],
+        scheduler: { simple: { /* ... */ } }
+      }
+    }
+    ```
+    
+    <ParamField path="modifications" type="array" required>
+      Ordered list of property modifications applied to each action.
+      
+      <Expandable title="modification types">
+        <ParamField path="add" type="object">
+          Add a property.
+          
+          ```json5
+          { add: { name: "pool", value: "gpu" } }
+          ```
+          
+          <ParamField path="name" type="string" required>
+            Property name.
+          </ParamField>
+          <ParamField path="value" type="string" required>
+            Property value.
+          </ParamField>
+        </ParamField>
+        
+        <ParamField path="remove" type="string">
+          Remove a property by name.
+          
+          ```json5
+          { remove: "unwanted_property" }
+          ```
+        </ParamField>
+        
+        <ParamField path="replace" type="object">
+          Replace matching property.
+          
+          ```json5
+          {
+            replace: {
+              name: "cpu_arch",
+              value: "amd64",
+              new_name: "cpu_arch",
+              new_value: "x86_64"
+            }
+          }
+          ```
+          
+          <ParamField path="name" type="string" required>
+            Property name to match.
+          </ParamField>
+          <ParamField path="value" type="string">
+            Value to match (omit to match any).
+          </ParamField>
+          <ParamField path="new_name" type="string" required>
+            New property name.
+          </ParamField>
+          <ParamField path="new_value" type="string">
+            New value (omit to keep original).
+          </ParamField>
+        </ParamField>
+      </Expandable>
+    </ParamField>
+    
+    <ParamField path="scheduler" type="object" required>
+      Nested scheduler that receives modified actions.
+    </ParamField>
+  </Tab>
+</Tabs>
+
+## Platform Properties
+
+Platform properties match tasks to workers. Workers advertise capabilities, and the scheduler filters based on property type:
+
+| Property Type | Behavior | Example Use Case |
+|--------------|----------|------------------|
+| `minimum` | Worker value >= task value | CPU cores, memory, disk |
+| `exact` | String exact match | Architecture, OS, GPU model |
+| `priority` | Soft preference | Container images |
+| `ignore` | Accept task property without worker requirement | Optional labels |
+
+### Example Configuration
+
+```json5
+{
+  name: "PRODUCTION_SCHEDULER",
+  simple: {
+    supported_platform_properties: {
+      // Resource minimums
+      cpu_count: "minimum",
+      memory_kb: "minimum",
+      disk_read_iops: "minimum",
+      
+      // Exact matches
+      cpu_arch: "exact",        // "x86_64", "aarch64"
+      cpu_vendor: "exact",      // "intel", "amd"
+      OSFamily: "exact",        // "Linux", "Windows"
+      
+      // Preferences
+      "container-image": "priority",
+      
+      // Optional
+      "build-id": "ignore"
+    },
+    allocation_strategy: "least_recently_used",
+    worker_timeout_s: 10,
+    max_job_retries: 5
+  }
+}
+```

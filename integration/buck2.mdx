@@ -1,0 +1,385 @@
+---
+title: Buck2 Integration
+description: Configure Buck2 to use NativeLink for remote caching and execution
+---
+
+NativeLink provides full support for Buck2's Remote Execution API, enabling distributed builds and caching for Buck2 projects.
+
+## Prerequisites
+
+- Buck2 installed (latest stable version)
+- A running NativeLink instance (see [Quickstart](/quickstart))
+- Basic understanding of Buck2 build configuration
+
+## Configuration
+
+Buck2's remote execution is configured through the `.buckconfig` file in your project root.
+
+### Basic Setup
+
+<Steps>
+  <Step title="Create or update .buckconfig">
+    Add the following remote execution configuration:
+
+    ```ini .buckconfig
+    [cells]
+    root = .
+
+    [buck2_re_client]
+    engine_address = localhost:50051
+    action_cache_address = localhost:50051
+    cas_address = localhost:50051
+    tls = false
+    instance_name = main
+
+    [build]
+    execution_platforms = root//platforms:platforms
+    ```
+  </Step>
+
+  <Step title="Create platform definitions">
+    Define your execution platforms in `platforms/BUCK`:
+
+    ```python platforms/BUCK
+    load(":defs.bzl", "platforms")
+
+    platforms(
+        name = "platforms",
+    )
+    ```
+
+    Create `platforms/defs.bzl`:
+
+    ```python platforms/defs.bzl
+    def platforms(name):
+        native.platform(
+            name = "linux-x86_64",
+            constraint_values = [
+                "ovr_config//os/constraints:linux",
+                "ovr_config//cpu/constraints:x86_64",
+            ],
+        )
+
+        native.platform(
+            name = "platforms",
+            deps = [":linux-x86_64"],
+        )
+    ```
+  </Step>
+
+  <Step title="Create .buckroot">
+    Ensure your project has a `.buckroot` file in the repository root (can be empty):
+
+    ```bash
+    touch .buckroot
+    ```
+  </Step>
+</Steps>
+
+## NativeLink Server Configuration
+
+Configure NativeLink to handle Buck2 requests. Here's a configuration example:
+
+```json5 buck2_cas.json5
+{
+  stores: [
+    {
+      name: "AC_MAIN_STORE",
+      filesystem: {
+        content_path: "/tmp/nativelink/data-worker-test/content_path-ac",
+        temp_path: "/tmp/nativelink/data-worker-test/tmp_path-ac",
+        eviction_policy: {
+          max_bytes: "1gb",
+        },
+      },
+    },
+    {
+      name: "WORKER_FAST_SLOW_STORE",
+      fast_slow: {
+        fast: {
+          filesystem: {
+            content_path: "/tmp/nativelink/data-worker-test/content_path-cas",
+            temp_path: "/tmp/nativelink/data-worker-test/tmp_path-cas",
+            eviction_policy: {
+              max_bytes: "10gb",
+            },
+          },
+        },
+        slow: {
+          noop: {},
+        },
+      },
+    },
+  ],
+  schedulers: [
+    {
+      name: "MAIN_SCHEDULER",
+      simple: {
+        supported_platform_properties: {
+          cpu_count: "minimum",
+          cpu_arch: "exact",
+          OSFamily: "priority",
+          "container-image": "priority",
+        },
+      },
+    },
+  ],
+  workers: [
+    {
+      local: {
+        worker_api_endpoint: {
+          uri: "grpc://127.0.0.1:50061",
+        },
+        cas_fast_slow_store: "WORKER_FAST_SLOW_STORE",
+        upload_action_result: {
+          ac_store: "AC_MAIN_STORE",
+        },
+        work_directory: "/tmp/nativelink/work",
+        platform_properties: {
+          cpu_count: {
+            values: ["16"],
+          },
+          cpu_arch: {
+            values: ["x86_64"],
+          },
+          OSFamily: {
+            values: [""],
+          },
+        },
+      },
+    },
+  ],
+  servers: [
+    {
+      name: "public",
+      listener: {
+        http: {
+          socket_address: "0.0.0.0:50051",
+        },
+      },
+      services: {
+        cas: [
+          {
+            instance_name: "main",
+            cas_store: "WORKER_FAST_SLOW_STORE",
+          },
+        ],
+        ac: [
+          {
+            instance_name: "main",
+            ac_store: "AC_MAIN_STORE",
+          },
+        ],
+        execution: [
+          {
+            instance_name: "main",
+            cas_store: "WORKER_FAST_SLOW_STORE",
+            scheduler: "MAIN_SCHEDULER",
+          },
+        ],
+        capabilities: [
+          {
+            instance_name: "main",
+            remote_execution: {
+              scheduler: "MAIN_SCHEDULER",
+            },
+          },
+        ],
+        bytestream: [
+          {
+            instance_name: "main",
+            cas_store: "WORKER_FAST_SLOW_STORE",
+          },
+        ],
+      },
+    },
+    {
+      name: "private_workers_servers",
+      listener: {
+        http: {
+          socket_address: "0.0.0.0:50061",
+        },
+      },
+      services: {
+        worker_api: {
+          scheduler: "MAIN_SCHEDULER",
+        },
+        admin: {},
+        health: {},
+      },
+    },
+  ],
+}
+```
+
+## Running Buck2 with NativeLink
+
+<Steps>
+  <Step title="Start NativeLink">
+    ```bash
+    nativelink buck2_cas.json5
+    ```
+  </Step>
+
+  <Step title="Build with Buck2">
+    Buck2 automatically uses remote execution when configured:
+
+    ```bash
+    buck2 build //...
+    ```
+  </Step>
+
+  <Step title="Verify remote execution">
+    Check Buck2's output for remote execution indicators:
+
+    ```
+    Action stats:
+    - Remote executions: 42
+    - Cache hits: 15
+    ```
+  </Step>
+</Steps>
+
+## Configuration Options
+
+### Remote Execution Client
+
+The `[buck2_re_client]` section supports the following options:
+
+<CodeGroup>
+```ini Basic
+[buck2_re_client]
+engine_address = localhost:50051
+action_cache_address = localhost:50051
+cas_address = localhost:50051
+tls = false
+instance_name = main
+```
+
+```ini With TLS
+[buck2_re_client]
+engine_address = cache.example.com:50051
+action_cache_address = cache.example.com:50051
+cas_address = cache.example.com:50051
+tls = true
+tls_ca_cert = /path/to/ca.crt
+tls_client_cert = /path/to/client.crt
+tls_client_key = /path/to/client.key
+instance_name = main
+```
+
+```ini Separate Services
+[buck2_re_client]
+# Separate endpoints for different services
+engine_address = scheduler.example.com:50052
+action_cache_address = cache.example.com:50051
+cas_address = cas.example.com:50051
+tls = false
+instance_name = production
+```
+</CodeGroup>
+
+### Key Configuration Fields
+
+| Field | Description |
+|-------|-------------|
+| `engine_address` | Remote execution scheduler endpoint |
+| `action_cache_address` | Action cache service endpoint |
+| `cas_address` | Content Addressable Storage endpoint |
+| `tls` | Enable TLS (true/false) |
+| `instance_name` | Instance name for multi-tenant setups |
+| `tls_ca_cert` | Path to CA certificate for TLS |
+| `tls_client_cert` | Path to client certificate for mTLS |
+| `tls_client_key` | Path to client key for mTLS |
+
+## Platform Properties
+
+Define execution requirements through platform properties:
+
+```python platforms/defs.bzl
+def platforms(name):
+    native.platform(
+        name = "linux-x86_64-large",
+        constraint_values = [
+            "ovr_config//os/constraints:linux",
+            "ovr_config//cpu/constraints:x86_64",
+        ],
+        exec_properties = {
+            "cpu_count": "8",
+            "memory_kb": "16000000",
+        },
+    )
+```
+
+## Testing Your Configuration
+
+<Steps>
+  <Step title="Clean build">
+    ```bash
+    buck2 clean
+    buck2 build //...
+    ```
+  </Step>
+
+  <Step title="Verify cache hits">
+    Rebuild to see cache hits:
+
+    ```bash
+    buck2 clean
+    buck2 build //...
+    ```
+
+    Look for cache hit statistics in the output.
+  </Step>
+
+  <Step title="Check remote execution">
+    Verify actions are executed remotely:
+
+    ```bash
+    buck2 build //... --show-output
+    ```
+  </Step>
+</Steps>
+
+## Troubleshooting
+
+### Connection errors
+
+Verify NativeLink is running and accessible:
+
+```bash
+grpcurl -plaintext localhost:50051 list
+```
+
+### TLS handshake failures
+
+Ensure certificates are correctly configured:
+
+```bash
+openssl s_client -connect cache.example.com:50051
+```
+
+### Platform not found
+
+Verify platform definitions exist and are referenced correctly in `.buckconfig`.
+
+## Example Project Structure
+
+```
+my-buck2-project/
+├── .buckroot
+├── .buckconfig
+├── platforms/
+│   ├── BUCK
+│   └── defs.bzl
+├── src/
+│   └── BUCK
+└── tests/
+    └── BUCK
+```
+
+## Next Steps
+
+- [Configure custom worker pools](/configuration/workers)
+- [Set up authentication](/deployment-examples/authentication)
+- [Monitor cache performance](/deployment-examples/metrics)

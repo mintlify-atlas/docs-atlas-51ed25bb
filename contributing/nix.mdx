@@ -1,0 +1,644 @@
+---
+title: Development with Nix
+description: Set up a reproducible NativeLink development environment with Nix flakes
+---
+
+Nix provides the recommended development environment for NativeLink. It ensures reproducible builds, matches the CI environment, and ships almost all development tooling in a single flake.
+
+## Why Nix?
+
+NativeLink uses Nix because it provides:
+
+- **Reproducibility** - Bit-for-bit identical builds across machines
+- **CI Parity** - Same environment locally and in continuous integration
+- **Complete Tooling** - All development tools in one place
+- **Declarative Setup** - Environment defined in `flake.nix`
+- **Cross-Platform** - Works on Linux, macOS, and WSL2
+
+<Note>
+  While Nix is optional, it's highly recommended as it lets you reproduce most of CI locally.
+</Note>
+
+## Installation
+
+### Prerequisites
+
+<Steps>
+  <Step title="Install Nix with Flakes">
+    Use the [experimental nix installer](https://github.com/NixOS/experimental-nix-installer) which enables flakes by default:
+
+    ```bash
+    curl --proto '=https' --tlsv1.2 -sSf -L https://install.determinate.systems/nix | sh -s -- install
+    ```
+
+    This installer automatically:
+    - Installs Nix
+    - Enables flakes and nix-command features
+    - Configures your shell
+
+    For more information, see the [Nix Flakes Wiki](https://nixos.wiki/wiki/Flakes).
+  </Step>
+
+  <Step title="Install direnv (Highly Recommended)">
+    [direnv](https://direnv.net/docs/installation.html) automatically loads the Nix environment when you enter the repository:
+
+    ```bash
+    nix profile install nixpkgs#direnv
+    ```
+
+    Hook direnv into your shell:
+
+    <Tabs>
+      <Tab title="Bash">
+        ```bash
+        echo 'eval "$(direnv hook bash)"' >> ~/.bashrc
+        ```
+      </Tab>
+      <Tab title="Zsh">
+        ```bash
+        echo 'eval "$(direnv hook zsh)"' >> ~/.zshrc
+        ```
+      </Tab>
+      <Tab title="Fish">
+        ```bash
+        echo 'direnv hook fish | source' >> ~/.config/fish/config.fish
+        ```
+      </Tab>
+    </Tabs>
+
+    See the [direnv hook documentation](https://direnv.net/docs/hook.html) for other shells.
+  </Step>
+
+  <Step title="Restart Your Terminal">
+    After installing direnv and adding the hook, restart your terminal or source your shell configuration:
+
+    ```bash
+    source ~/.bashrc  # or ~/.zshrc, etc.
+    ```
+  </Step>
+
+  <Step title="Allow direnv in Repository">
+    When you `cd` into the nativelink repository, you'll see a message asking you to run:
+
+    ```bash
+    direnv allow
+    ```
+
+    This activates the Nix development environment.
+  </Step>
+</Steps>
+
+<Warning>
+  If you don't use direnv, you'll need to manually run `nix develop` every time you enter the repository, switch branches, or make changes to Nix files.
+</Warning>
+
+### Verify Installation
+
+<Steps>
+  <Step title="Check Nix Environment">
+    Verify the environment is active:
+
+    ```bash
+    env | grep NIX
+    ```
+
+    You should see several `*NIX_*` environment variables.
+  </Step>
+
+  <Step title="Check Available Tools">
+    ```bash
+    # Bazel (via bazelisk)
+    bazel --version
+
+    # Rust toolchain
+    rustc --version
+    cargo --version
+
+    # Development tools
+    pre-commit --version
+    git-cliff --version
+    ```
+  </Step>
+</Steps>
+
+## Development Shell
+
+### Included Tools
+
+The Nix development shell (defined in `flake.nix:453-560`) includes:
+
+<Tabs>
+  <Tab title="Core Development">
+    - **git** - Version control
+    - **pre-commit** - Git hooks for code quality
+    - **git-cliff** - Changelog generation
+    - **buck2** - Alternative build system
+  </Tab>
+  <Tab title="Rust Tooling">
+    - **bazel** - Build system (via bazelisk wrapper)
+    - **stable-rust** - Rust stable toolchain
+    - **rust-analyzer** - IDE language server
+    - **lre-rs-configs-gen** - LRE configuration generator
+  </Tab>
+  <Tab title="Infrastructure">
+    - **awscli2** - AWS command line
+    - **google-cloud-sdk** - GCP tools
+    - **kubectl** - Kubernetes CLI
+    - **kubernetes-helm** - Helm charts
+    - **docker-client** - Docker CLI
+    - **kind** - Kubernetes in Docker
+    - **pulumi** - Infrastructure as code
+    - **fluxcd** - GitOps for Kubernetes
+  </Tab>
+  <Tab title="Container Tools">
+    - **skopeo** - Container image operations
+    - **dive** - Image layer inspection
+    - **cosign** - Container signing
+    - **trivy** - Security scanner
+  </Tab>
+  <Tab title="Documentation">
+    - **vale** - Prose linter
+    - **lychee** - Link checker
+    - **docs** - Documentation builder
+  </Tab>
+  <Tab title="Web Development">
+    - **bun** - JavaScript runtime
+    - **nodejs_22** - Node.js for pagefind
+    - **playwright-driver** - Browser automation
+    - **playwright-test** - E2E testing
+  </Tab>
+</Tabs>
+
+See `flake.nix:454-520` for the complete list.
+
+### Shell Hook
+
+When entering the development shell, several setup scripts run automatically (see `flake.nix:522-559`):
+
+<Steps>
+  <Step title="Pre-commit Hooks">
+    Generates `.pre-commit-config.yaml` symlink:
+    ```bash
+    ${config.pre-commit.installationScript}
+    ```
+  </Step>
+
+  <Step title="LRE Configuration">
+    Generates `lre.bazelrc` for local remote execution:
+    ```bash
+    ${config.lre.installationScript}
+    ```
+  </Step>
+
+  <Step title="NativeLink Cache">
+    Generates `nativelink.bazelrc` for cache access:
+    ```bash
+    ${config.nativelink.installationScript}
+    ```
+  </Step>
+
+  <Step title="Platform-Specific Config">
+    Generates platform configs:
+    - `nixos.bazelrc` (on NixOS)
+    - `darwin.bazelrc` (on macOS)
+  </Step>
+
+  <Step title="Environment Variables">
+    Sets development variables:
+    ```bash
+    export CC=clang
+    export PULUMI_K8S_AWAIT_ALL=true
+    export PLAYWRIGHT_BROWSERS_PATH=${pkgs.playwright-driver.browsers}
+    ```
+  </Step>
+</Steps>
+
+## Building with Nix
+
+### Build Commands
+
+<Steps>
+  <Step title="Build NativeLink">
+    ```bash
+    # Build for your current platform
+    nix build
+
+    # Binary is in result/bin/
+    ./result/bin/nativelink --help
+    ```
+  </Step>
+
+  <Step title="Build for Specific Platform">
+    ```bash
+    # Linux x86_64 (musl, static)
+    nix build .#nativelink-x86_64-linux
+
+    # Linux aarch64 (musl, static)
+    nix build .#nativelink-aarch64-linux
+
+    # macOS (native compilation only)
+    nix build .#nativelink-aarch64-darwin  # On ARM Mac
+    nix build .#nativelink-x86_64-darwin   # On Intel Mac
+    ```
+
+    See `flake.nix:174-179` for platform definitions.
+  </Step>
+
+  <Step title="Build Container Image">
+    ```bash
+    # Build OCI container image
+    nix build .#nativelink-image
+
+    # Load into Docker
+    docker load < result
+
+    # Image config at flake.nix:198-225
+    ```
+  </Step>
+
+  <Step title="Build with Coverage">
+    ```bash
+    # Generate code coverage report
+    nix build .#nativelinkCoverageForHost
+
+    # View coverage report
+    open result/index.html
+    ```
+
+    Uses nightly Rust with `cargo-llvm-cov` (see `flake.nix:293-308`).
+  </Step>
+</Steps>
+
+### Build Internals
+
+NativeLink's Nix build uses [crane](https://github.com/ipetkov/crane) for Rust projects:
+
+<Tabs>
+  <Tab title="Build Arguments">
+    Common build arguments (see `flake.nix:98-155`):
+
+    ```nix
+    # Target architecture (musl on Linux)
+    CARGO_BUILD_TARGET = "x86_64-unknown-linux-musl";
+
+    # Static linking on Linux
+    CARGO_BUILD_RUSTFLAGS = "-C target-feature=+crt-static";
+
+    # Custom linker (mold on Linux, lld elsewhere)
+    CARGO_TARGET_*_LINKER = linkerPath;
+
+    # Dependencies
+    buildInputs = [cacert] ++ darwin.frameworks;
+    nativeBuildInputs = [bash mold/lld];
+    ```
+  </Tab>
+  <Tab title="Dependency Caching">
+    Nix builds dependencies separately for efficient caching:
+
+    ```nix
+    # Build dependencies first
+    cargoArtifactsFor = p: (craneLibFor p).buildDepsOnly (commonArgsFor p);
+
+    # Then build NativeLink
+    nativelinkFor = p: (craneLibFor p).buildPackage (
+      (commonArgsFor p) // { cargoArtifacts = cargoArtifactsFor p; }
+    );
+    ```
+
+    See `flake.nix:158-165`.
+  </Tab>
+  <Tab title="Cross-Compilation">
+    Cross-compilation using Nix package sets:
+
+    ```nix
+    # x86_64 Linux (musl)
+    pkgs.pkgsCross.musl64
+
+    # aarch64 Linux (musl)
+    pkgs.pkgsCross.aarch64-multiplatform-musl
+
+    # macOS doesn't support cross-compilation
+    # Must build natively
+    ```
+
+    See `flake.nix:167-179`.
+  </Tab>
+</Tabs>
+
+## Testing with Nix
+
+### Run Tests
+
+<Steps>
+  <Step title="Unit Tests">
+    ```bash
+    # Run via Bazel in Nix shell
+    bazel test :unit_tests
+
+    # Or run all tests
+    bazel test //...
+    ```
+  </Step>
+
+  <Step title="Integration Tests">
+    ```bash
+    # Build integration test packages
+    nix build .#buildstream-with-nativelink-test
+    nix build .#mongo-with-nativelink-test
+    nix build .#buck2-with-nativelink-test
+
+    # Run the tests
+    ./result/bin/test
+    ```
+
+    See `flake.nix:364-375` for test definitions.
+  </Step>
+
+  <Step title="Doc Tests">
+    ```bash
+    bazel test :doctests
+    ```
+  </Step>
+</Steps>
+
+### Pre-commit Hooks
+
+Pre-commit hooks are configured via the Nix flake (see `flake.nix:409-414`):
+
+```bash
+# Run all hooks
+pre-commit run -a
+
+# Run specific hook
+pre-commit run rustfmt
+pre-commit run clippy
+```
+
+Hooks are defined in `tools/pre-commit-hooks.nix` and include:
+- rustfmt (formatting)
+- clippy (linting)
+- vale (documentation)
+- Various config generators
+
+## Development Workflow
+
+### Typical Workflow
+
+<Steps>
+  <Step title="Enter Repository">
+    ```bash
+    cd nativelink
+    # direnv automatically loads environment
+    # Or manually: nix develop
+    ```
+  </Step>
+
+  <Step title="Make Changes">
+    Edit source files using your preferred editor.
+  </Step>
+
+  <Step title="Build and Test">
+    ```bash
+    # Quick iteration with Cargo
+    cargo build
+    cargo test
+
+    # Or with Bazel for CI parity
+    bazel build //:nativelink
+    bazel test //...
+    ```
+  </Step>
+
+  <Step title="Check Code Quality">
+    ```bash
+    # Run pre-commit hooks
+    pre-commit run -a
+
+    # Fix formatting
+    cargo fmt --all
+    bazel run --config=rustfmt @rules_rust//:rustfmt
+    ```
+  </Step>
+
+  <Step title="Run Locally">
+    ```bash
+    cargo run -- nativelink-config/examples/basic_cas.json5
+    ```
+  </Step>
+</Steps>
+
+### Using Bazel in Nix
+
+The Nix shell provides a Bazel wrapper (see `flake.nix:455-458`):
+
+```bash
+# Wrapper unsets TMPDIR for Bazel compatibility
+bazel = pkgs.writeShellScriptBin "bazel" ''
+  unset TMPDIR TMP
+  exec ${pkgs.bazelisk}/bin/bazelisk "$@"
+'';
+```
+
+This ensures Bazel works correctly in the Nix environment.
+
+## Advanced Features
+
+### Local Remote Execution (LRE)
+
+Nix provides LRE toolchains automatically (see `flake.nix:416-425`):
+
+```bash
+# LRE environment variables
+Lre.Env = [
+  # C++ toolchain (Linux only)
+  lre-cc.meta.Env
+  # Rust toolchain
+  lre-rs.meta.Env
+];
+
+# Platform prefix
+Lre.prefix = "linux" or "macos";
+```
+
+LRE config is generated in `lre.bazelrc` by the shell hook.
+
+### Custom Packages
+
+The flake exports several custom packages (see `flake.nix:336-398`):
+
+<CardGroup cols={2}>
+  <Card title="nativelink-worker-*">
+    Worker images for different toolchains:
+    - lre-cc (C++ toolchain)
+    - lre-rs (Rust toolchain)
+    - lre-java (Java toolchain)
+    - siso-chromium (Chromium builds)
+  </Card>
+  <Card title="Integration Tests">
+    - buildstream-with-nativelink-test
+    - mongo-with-nativelink-test
+    - buck2-with-nativelink-test
+    - rbe-toolchain-with-nativelink-test
+  </Card>
+  <Card title="Utilities">
+    - generate-bazel-rc
+    - generate-stores-config
+    - update-module-hashes
+    - local-image-test
+  </Card>
+</CardGroup>
+
+Build any package:
+```bash
+nix build .#package-name
+```
+
+### Flake Apps
+
+The flake provides runnable apps (see `flake.nix:325-334`):
+
+```bash
+# Run NativeLink directly
+nix run github:TraceMachina/nativelink -- config.json5
+
+# Run native CLI
+nix run .#native
+```
+
+## Documentation Generation
+
+Generate documentation using the `docs` command:
+
+```bash
+# In Nix shell
+docs
+
+# This runs the docs script from flake.nix:190
+# Opens browser with generated documentation
+```
+
+The `docs` package is defined at `tools/docs.nix`.
+
+## Troubleshooting
+
+<AccordionGroup>
+  <Accordion title="direnv not loading environment">
+    Check direnv status:
+
+    ```bash
+    direnv status
+    ```
+
+    Ensure you ran `direnv allow` in the repository.
+
+    If issues persist, manually enter the shell:
+    ```bash
+    nix develop
+    ```
+  </Accordion>
+
+  <Accordion title="Nix build fails with hash mismatch">
+    Update flake inputs:
+
+    ```bash
+    nix flake update
+    ```
+
+    Or rebuild without cache:
+    ```bash
+    nix build --rebuild
+    ```
+  </Accordion>
+
+  <Accordion title="Out of disk space in /nix/store">
+    Collect garbage to free space:
+
+    ```bash
+    # Delete unreferenced packages
+    nix-collect-garbage
+
+    # Delete old generations and collect garbage
+    nix-collect-garbage -d
+
+    # Check space usage
+    du -sh /nix/store
+    ```
+  </Accordion>
+
+  <Accordion title="macOS: Cannot find C++ compiler">
+    Install Xcode Command Line Tools:
+
+    ```bash
+    xcode-select --install
+    ```
+
+    The Nix environment doesn't ship a full C++ toolchain.
+  </Accordion>
+
+  <Accordion title="Nix commands hang or are very slow">
+    Check Nix daemon status:
+
+    ```bash
+    # Check if daemon is running
+    systemctl status nix-daemon  # On Linux with systemd
+
+    # Restart daemon
+    sudo systemctl restart nix-daemon
+    ```
+
+    Or rebuild Nix database:
+    ```bash
+    nix-store --verify --check-contents
+    ```
+  </Accordion>
+</AccordionGroup>
+
+## Platform-Specific Notes
+
+### Linux
+
+- Builds use musl for static linking
+- LRE fully supported with C++ and Rust toolchains
+- Uses mold linker for fast linking (see `flake.nix:120`)
+
+### macOS
+
+- No cross-compilation support (must build natively)
+- LRE uses Rust toolchain only (C++ not yet supported)
+- Requires Xcode Command Line Tools
+- Uses lld linker (see `flake.nix:121`)
+- Darwin-specific frameworks included automatically (see `flake.nix:512-516`)
+
+### NixOS
+
+- Special PATH configuration for LRE (see `flake.nix:426-452`)
+- Generates `nixos.bazelrc` with correct binary paths
+- Fully integrated with system Nix configuration
+
+## Resources
+
+<CardGroup cols={2}>
+  <Card title="Nix Manual" icon="book" href="https://nixos.org/manual/nix/stable/">
+    Official Nix documentation
+  </Card>
+  <Card title="Nix Flakes" icon="snowflake" href="https://nixos.wiki/wiki/Flakes">
+    Flakes reference and guide
+  </Card>
+  <Card title="crane" icon="crane" href="https://github.com/ipetkov/crane">
+    Nix library for Rust projects
+  </Card>
+  <Card title="direnv" icon="terminal" href="https://direnv.net/">
+    Environment switcher for shells
+  </Card>
+</CardGroup>
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Development with Bazel" icon="cube" href="/contributing/bazel">
+    Learn Bazel build system features
+  </Card>
+  <Card title="Development with Cargo" icon="rust" href="/contributing/cargo">
+    Use Cargo for fast iteration
+  </Card>
+</CardGroup>

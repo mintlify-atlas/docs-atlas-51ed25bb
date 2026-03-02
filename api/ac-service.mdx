@@ -1,0 +1,193 @@
+---
+title: Action Cache (AC) service
+description: Cache build action results for faster incremental builds
+---
+
+The Action Cache (AC) service stores and retrieves action results, enabling incremental builds by reusing previously computed outputs.
+
+## Overview
+
+The Action Cache maps action digests to their execution results, including:
+- Exit code
+- stdout/stderr
+- Output file digests
+- Execution metadata
+
+**Key features:**
+- Action result caching
+- Read-only mode support
+- Automatic result validation
+
+## Configuration
+
+<ParamField path="instance_name" type="string" required>
+  The instance name identifying this AC endpoint
+</ParamField>
+
+<ParamField path="ac_store" type="string" required>
+  Reference to the store configured in the `stores` section
+</ParamField>
+
+<ParamField path="read_only" type="boolean" default={false}>
+  If true, only GetActionResult is allowed (no updates)
+</ParamField>
+
+```json5
+{
+  services: {
+    ac: [
+      {
+        instance_name: "main",
+        ac_store: "AC_STORE",
+        read_only: false
+      }
+    ]
+  }
+}
+```
+
+## gRPC Methods
+
+### GetActionResult
+
+Retrieve a cached action result.
+
+**Request:**
+
+<ParamField path="instance_name" type="string" required>
+  The instance name
+</ParamField>
+
+<ParamField path="action_digest" type="Digest" required>
+  Digest of the Action message
+</ParamField>
+
+<ParamField path="inline_stdout" type="boolean" default={false}>
+  Include stdout inline if small enough
+</ParamField>
+
+<ParamField path="inline_stderr" type="boolean" default={false}>
+  Include stderr inline if small enough
+</ParamField>
+
+<ParamField path="inline_output_files" type="string[]">
+  Paths of output files to include inline
+</ParamField>
+
+**Response:**
+
+<ResponseField name="exit_code" type="int32">
+  Process exit code
+</ResponseField>
+
+<ResponseField name="stdout_digest" type="Digest">
+  Digest of stdout (if not inlined)
+</ResponseField>
+
+<ResponseField name="stdout_raw" type="bytes">
+  Inline stdout (if requested and small)
+</ResponseField>
+
+<ResponseField name="stderr_digest" type="Digest">
+  Digest of stderr (if not inlined)
+</ResponseField>
+
+<ResponseField name="stderr_raw" type="bytes">
+  Inline stderr (if requested and small)
+</ResponseField>
+
+<ResponseField name="output_files" type="OutputFile[]">
+  Output files produced by the action
+</ResponseField>
+
+<ResponseField name="output_directories" type="OutputDirectory[]">
+  Output directories produced by the action
+</ResponseField>
+
+<ResponseField name="execution_metadata" type="ExecutedActionMetadata">
+  Metadata about the execution (worker, timing, etc.)
+</ResponseField>
+
+**Example with grpcurl:**
+
+```bash
+grpcurl -plaintext \
+  -d '{
+    "instance_name": "main",
+    "action_digest": {
+      "hash": "abc123...",
+      "size_bytes": 256
+    },
+    "inline_stdout": true,
+    "inline_stderr": true
+  }' \
+  localhost:50051 build.bazel.remote.execution.v2.ActionCache/GetActionResult
+```
+
+### UpdateActionResult
+
+Store an action result in the cache.
+
+**Request:**
+
+<ParamField path="instance_name" type="string" required>
+  The instance name
+</ParamField>
+
+<ParamField path="action_digest" type="Digest" required>
+  Digest of the Action message
+</ParamField>
+
+<ParamField path="action_result" type="ActionResult" required>
+  The result to cache
+</ParamField>
+
+<ParamField path="results_cache_policy" type="ResultsCachePolicy">
+  Caching policy (priority, etc.)
+</ParamField>
+
+**Response:**
+
+<ResponseField name="action_result" type="ActionResult">
+  The stored action result (echoed back)
+</ResponseField>
+
+<Warning>Updates fail with `PERMISSION_DENIED` if the AC is configured as read-only</Warning>
+
+## Cache Key Structure
+
+The action digest serves as the cache key and is computed from:
+- Command line arguments
+- Environment variables
+- Input file digests
+- Platform properties
+
+<Note>The action digest must be deterministic - same inputs always produce the same digest</Note>
+
+## Implementation Details
+
+From `nativelink-service/src/ac_server.rs`:
+
+```rust
+pub struct AcServer {
+    stores: HashMap<String, AcStoreInfo>,
+}
+
+pub struct AcStoreInfo {
+    store: Store,
+    read_only: bool,
+}
+```
+
+Each instance can have independent read-only settings, allowing shared read-only caches with local read-write overlays.
+
+## Error Codes
+
+| Code | Description |
+|------|-------------|
+| `NOT_FOUND` | Action result not in cache |
+| `INVALID_ARGUMENT` | Invalid action digest or instance name |
+| `PERMISSION_DENIED` | Update attempted on read-only AC |
+| `INTERNAL` | Storage backend error |
+
+<Info>The AC service follows the [Remote Execution API v2 specification](https://github.com/bazelbuild/remote-apis/blob/main/build/bazel/remote/execution/v2/remote_execution.proto)</Info>

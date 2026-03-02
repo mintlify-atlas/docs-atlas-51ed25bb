@@ -1,0 +1,347 @@
+---
+title: Worker Configuration
+description: Worker configuration reference for NativeLink remote execution
+---
+
+Workers execute tasks scheduled by the scheduler. Only the `local` worker type is currently supported.
+
+## Worker Definition
+
+<ParamField path="local" type="object" required>
+  Local worker configuration.
+</ParamField>
+
+## Local Worker
+
+Executes tasks locally on the machine running NativeLink.
+
+```json5
+{
+  workers: [
+    {
+      local: {
+        name: "worker-1",
+        worker_api_endpoint: {
+          uri: "grpc://127.0.0.1:50061"
+        },
+        cas_fast_slow_store: "WORKER_STORE",
+        work_directory: "/tmp/nativelink/work",
+        platform_properties: {
+          cpu_count: { values: ["16"] },
+          cpu_arch: { values: ["x86_64"] },
+          memory_kb: { values: ["32000000"] }
+        }
+      }
+    }
+  ]
+}
+```
+
+### Core Configuration
+
+<ParamField path="name" type="string">
+  Worker identifier for logging and metrics. Defaults to array index. Used as prefix for worker ID (`{name}-{uuid}`).
+</ParamField>
+
+<ParamField path="worker_api_endpoint" type="object" required>
+  Scheduler WorkerAPI endpoint.
+  
+  <Expandable title="endpoint properties">
+    <ParamField path="uri" type="string" required>
+      Scheduler WorkerAPI URI (e.g., `grpc://127.0.0.1:50061`).
+    </ParamField>
+    
+    <ParamField path="timeout" type="number" default="5">
+      Request timeout (seconds).
+    </ParamField>
+    
+    <ParamField path="tls_config" type="object">
+      TLS configuration for grpcs://.
+      
+      <Expandable title="tls properties">
+        <ParamField path="ca_file" type="string">
+          Certificate authority file.
+        </ParamField>
+        <ParamField path="cert_file" type="string">
+          Client certificate file.
+        </ParamField>
+        <ParamField path="key_file" type="string">
+          Client private key file.
+        </ParamField>
+      </Expandable>
+    </ParamField>
+  </Expandable>
+</ParamField>
+
+<ParamField path="cas_fast_slow_store" type="string" required>
+  Reference to a `fast_slow` store. The `fast` store must be a `filesystem` store for hardlinking. The `slow` store must resolve to the same CAS the scheduler uses.
+  
+  ```json5
+  stores: [
+    {
+      name: "WORKER_STORE",
+      fast_slow: {
+        fast: {
+          filesystem: {
+            content_path: "/var/cache/nativelink/cas",
+            temp_path: "/var/cache/nativelink/tmp",
+            eviction_policy: { max_bytes: "50gb" }
+          }
+        },
+        slow: {
+          grpc: {
+            endpoints: [{ address: "grpc://scheduler:50051" }],
+            store_type: "cas"
+          }
+        }
+      }
+    }
+  ]
+  ```
+</ParamField>
+
+<ParamField path="work_directory" type="string" required>
+  Directory for task execution. Must be on same filesystem as the fast store's `content_path` for hardlinking. Purged on startup.
+</ParamField>
+
+### Platform Properties
+
+<ParamField path="platform_properties" type="object" required>
+  Worker capabilities advertised to scheduler. Keys must match scheduler's `supported_platform_properties`.
+  
+  Each property can be:
+  - `values` - Static list of values
+  - `query_cmd` - Command to execute for dynamic values (output split by newlines)
+  
+  ```json5
+  platform_properties: {
+    cpu_count: { values: ["16"] },
+    cpu_arch: { values: ["x86_64"] },
+    memory_kb: { values: ["32000000"] },
+    gpu_count: { values: ["2"] },
+    gpu_model: { values: ["nvidia-t4"] },
+    OSFamily: { values: ["Linux"] },
+    "container-image": { values: [""] },
+    
+    // Dynamic property from command
+    kernel_version: {
+      query_cmd: "uname -r"
+    }
+  }
+  ```
+</ParamField>
+
+### Execution Settings
+
+<ParamField path="max_action_timeout" type="number" default="1200">
+  Maximum action execution time (seconds). Tasks requesting longer timeouts are rejected. Default: 20 minutes.
+</ParamField>
+
+<ParamField path="max_upload_timeout" type="number" default="600">
+  Maximum time for uploading results to CAS (seconds). Actions exceeding this fail with `DeadlineExceeded`. Default: 10 minutes.
+</ParamField>
+
+<ParamField path="max_inflight_tasks" type="number" default="0">
+  Maximum concurrent tasks (0 = unlimited).
+</ParamField>
+
+<ParamField path="timeout_handled_externally" type="boolean" default="false">
+  Disable NativeLink timeout enforcement. Set to `true` if `entrypoint` handles timeouts (e.g., docker containers with download time).
+  
+  When `true`:
+  - Worker uses `max_action_timeout` for all actions
+  - Actual timeout must be enforced via `additional_environment` with `timeout_millis` and `side_channel_file`
+</ParamField>
+
+<ParamField path="entrypoint" type="string">
+  Command prefix for all actions. Parsed as command + args, not shell.
+  
+  Example: `"entrypoint": "run.sh"` with action command `"sleep 5"` executes as `run.sh sleep 5`.
+  
+  ```json5
+  entrypoint: "/usr/local/bin/wrapper.sh"
+  ```
+</ParamField>
+
+<ParamField path="experimental_precondition_script" type="string">
+  Script to run before each action. Worker pauses if script exits non-zero. Useful for resource checks.
+  
+  ```json5
+  experimental_precondition_script: "/usr/local/bin/check-resources.sh"
+  ```
+</ParamField>
+
+### Result Upload
+
+<ParamField path="upload_action_result" type="object">
+  Controls how action results are uploaded.
+  
+  <Expandable title="upload properties">
+    <ParamField path="ac_store" type="string">
+      Action Cache store for results. If unset, results are not cached.
+    </ParamField>
+    
+    <ParamField path="upload_ac_results_strategy" type="enum" default="success_only">
+      When to upload to Action Cache.
+      
+      Options:
+      - `success_only` - Only exit code 0
+      - `failures_only` - Only non-zero exit codes
+      - `everything` - All completed actions
+      - `never` - Never upload
+    </ParamField>
+    
+    <ParamField path="historical_results_store" type="string">
+      CAS store for historical results (typically failures). Defaults to parent CAS store.
+    </ParamField>
+    
+    <ParamField path="upload_historical_results_strategy" type="enum" default="failures_only">
+      When to upload historical results.
+    </ParamField>
+    
+    <ParamField path="success_message_template" type="string">
+      Template for `ExecuteResponse.message` on success. Supports variables:
+      - `{digest_function}` - Hash function
+      - `{action_digest_hash}` - Action digest hash
+      - `{action_digest_size}` - Action digest size
+      - `{historical_results_hash}` - Historical result hash
+      - `{historical_results_size}` - Historical result size
+      
+      ```json5
+      success_message_template: "https://ui.example.com/{digest_function}/action/{action_digest_hash}-{action_digest_size}/"
+      ```
+    </ParamField>
+    
+    <ParamField path="failure_message_template" type="string">
+      Template for failure messages. Uses same variables as `success_message_template`.
+      
+      ```json5
+      failure_message_template: "https://ui.example.com/{digest_function}/historical/{historical_results_hash}-{historical_results_size}/"
+      ```
+    </ParamField>
+  </Expandable>
+</ParamField>
+
+### Environment Variables
+
+<ParamField path="additional_environment" type="object">
+  Environment variables to set for task execution. Values can be static or dynamic.
+  
+  Sources:
+  - `value` - Static string
+  - `property` - From action platform property
+  - `from_environment` - From worker's environment
+  - `timeout_millis` - Task timeout in milliseconds
+  - `side_channel_file` - Path for out-of-band communication
+  - `action_directory` - Temporary directory for action (auto-cleaned)
+  
+  ```json5
+  additional_environment: {
+    // Static value
+    ENV_VAR: { value: "static-value" },
+    
+    // From action property
+    POOL: { property: "pool" },
+    
+    // From worker environment
+    PATH: "from_environment",
+    
+    // Task timeout
+    TIMEOUT_MS: "timeout_millis",
+    
+    // Side channel for script communication
+    SIDE_CHANNEL: "side_channel_file",
+    
+    // Temp directory
+    ACTION_TMP: "action_directory"
+  }
+  ```
+  
+  Side channel file format (JSON):
+  ```json
+  {
+    "failure": "timeout"  // Mark as timeout
+  }
+  ```
+</ParamField>
+
+### Directory Cache
+
+<ParamField path="directory_cache" type="object">
+  Caches reconstructed input directories using hardlinks to speed up repeated actions.
+  
+  <Expandable title="cache properties">
+    <ParamField path="max_entries" type="number" default="1000">
+      Maximum cached directories.
+    </ParamField>
+    
+    <ParamField path="max_size_bytes" type="number" default="10737418240">
+      Maximum total cache size (bytes). Default: 10GB.
+    </ParamField>
+    
+    <ParamField path="cache_root" type="string">
+      Cache storage directory. Must be on same filesystem as `work_directory`. Defaults to `{work_directory}/../directory_cache`.
+    </ParamField>
+  </Expandable>
+  
+  ```json5
+  directory_cache: {
+    max_entries: 5000,
+    max_size_bytes: "50gb",
+    cache_root: "/var/cache/nativelink/dircache"
+  }
+  ```
+</ParamField>
+
+## Complete Example
+
+```json5
+{
+  workers: [
+    {
+      local: {
+        name: "worker-prod-1",
+        
+        worker_api_endpoint: {
+          uri: "grpc://scheduler.internal:50061",
+          timeout: 10
+        },
+        
+        cas_fast_slow_store: "WORKER_FAST_SLOW",
+        work_directory: "/mnt/nativelink/work",
+        
+        max_action_timeout: 3600,      // 1 hour
+        max_upload_timeout: 600,       // 10 minutes
+        max_inflight_tasks: 10,
+        
+        platform_properties: {
+          cpu_count: { values: ["32"] },
+          cpu_arch: { values: ["x86_64"] },
+          cpu_vendor: { values: ["intel"] },
+          memory_kb: { values: ["128000000"] },
+          disk_read_iops: { values: ["10000"] },
+          OSFamily: { values: ["Linux"] },
+          "container-image": { values: [""] }
+        },
+        
+        upload_action_result: {
+          ac_store: "AC_MAIN",
+          upload_ac_results_strategy: "success_only",
+          failure_message_template: "https://ui.example.com/build/{action_digest_hash}"
+        },
+        
+        additional_environment: {
+          TMPDIR: "action_directory",
+          TIMEOUT_MS: "timeout_millis",
+          SIDE_CHANNEL: "side_channel_file"
+        },
+        
+        directory_cache: {
+          max_entries: 10000,
+          max_size_bytes: "100gb"
+        }
+      }
+    }
+  ]
+}
+```

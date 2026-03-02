@@ -1,0 +1,491 @@
+---
+title: Docker Deployment
+description: Deploy NativeLink using Docker and Docker Compose for local development and testing
+---
+
+NativeLink provides Docker Compose configurations for quick deployment in development and testing environments. This guide covers both single-worker and multi-worker setups.
+
+## Prerequisites
+
+- Docker Engine 20.10+
+- Docker Compose v2.0+
+- 4GB+ RAM available
+- 20GB+ disk space
+
+<Warning>
+  Docker deployments are suitable for development and testing. For production environments, see [Production Deployment](/deployment/production).
+</Warning>
+
+## Single Worker Deployment
+
+The simplest NativeLink deployment runs all components in a single setup.
+
+<Steps>
+  <Step title="Clone the repository">
+    ```bash
+    git clone https://github.com/TraceMachina/nativelink.git
+    cd nativelink/deployment-examples/docker-compose
+    ```
+  </Step>
+
+  <Step title="Start services">
+    ```bash
+    docker compose up -d
+    ```
+
+    This starts three services:
+    - **nativelink_local_cas**: Content Addressable Storage server (port 50051)
+    - **nativelink_scheduler**: Job scheduler (port 50052)
+    - **nativelink_executor**: Worker executing builds
+  </Step>
+
+  <Step title="Verify deployment">
+    ```bash
+    docker compose ps
+    docker compose logs -f
+    ```
+  </Step>
+
+  <Step title="Test with Bazel">
+    ```bash
+    bazel build //... \
+      --remote_cache=grpc://127.0.0.1:50051 \
+      --remote_executor=grpc://127.0.0.1:50052
+    ```
+  </Step>
+</Steps>
+
+### Single Worker Configuration
+
+<CodeGroup>
+```yaml docker-compose.yml
+services:
+  nativelink_local_cas:
+    image: trace_machina/nativelink:latest
+    volumes:
+      - ${NATIVELINK_DIR:-~/.cache/nativelink}:/root/.cache/nativelink
+      - type: bind
+        source: .
+        target: /root
+    environment:
+      RUST_LOG: ${RUST_LOG:-warn}
+    ports:
+      - "50051:50051/tcp"
+      - "127.0.0.1:50061:50061"
+      - "50071:50071/tcp"
+    command: nativelink /root/local-storage-cas.json5
+
+  nativelink_scheduler:
+    image: trace_machina/nativelink:latest
+    volumes:
+      - type: bind
+        source: .
+        target: /root
+    environment:
+      RUST_LOG: ${RUST_LOG:-warn}
+      CAS_ENDPOINT: nativelink_local_cas
+    ports:
+      - "50052:50052/tcp"
+    command: nativelink /root/scheduler.json5
+    depends_on:
+      - nativelink_local_cas
+
+  nativelink_executor:
+    image: trace_machina/nativelink:latest
+    volumes:
+      - ${NATIVELINK_DIR:-~/.cache/nativelink}:/root/.cache/nativelink
+      - type: bind
+        source: .
+        target: /root
+    environment:
+      RUST_LOG: ${RUST_LOG:-warn}
+      CAS_ENDPOINT: nativelink_local_cas
+      SCHEDULER_ENDPOINT: nativelink_scheduler
+    command: nativelink /root/worker.json5
+    depends_on:
+      - nativelink_local_cas
+      - nativelink_scheduler
+```
+
+```json5 local-storage-cas.json5
+{
+  stores: [
+    {
+      name: "CAS_MAIN_STORE",
+      compression: {
+        compression_algorithm: {
+          lz4: {},
+        },
+        backend: {
+          filesystem: {
+            content_path: "~/.cache/nativelink/content_path-cas",
+            temp_path: "~/.cache/nativelink/tmp_path-cas",
+            eviction_policy: {
+              max_bytes: 10000000000, // 10GB
+            },
+          },
+        },
+      },
+    },
+    {
+      name: "AC_MAIN_STORE",
+      filesystem: {
+        content_path: "~/.cache/nativelink/content_path-ac",
+        temp_path: "~/.cache/nativelink/tmp_path-ac",
+        eviction_policy: {
+          max_bytes: 500000000, // 500MB
+        },
+      },
+    },
+  ],
+  servers: [
+    {
+      listener: {
+        http: {
+          socket_address: "0.0.0.0:50051",
+        },
+      },
+      services: {
+        cas: [{ cas_store: "CAS_MAIN_STORE" }],
+        ac: [{ ac_store: "AC_MAIN_STORE" }],
+        capabilities: [],
+        bytestream: {
+          cas_stores: { "": "CAS_MAIN_STORE" },
+        },
+      },
+    },
+  ],
+}
+```
+</CodeGroup>
+
+## Multi-Worker Deployment
+
+For distributed execution across multiple workers, use the multi-worker configuration.
+
+<Warning>
+  **Critical**: All workers MUST share the same CAS storage path. Using different paths will cause "Object not found" errors.
+</Warning>
+
+<Steps>
+  <Step title="Use multi-worker compose file">
+    ```bash
+    cd deployment-examples/docker-compose
+    docker compose -f docker-compose-multi-worker.yml build
+    ```
+  </Step>
+
+  <Step title="Start multi-worker deployment">
+    ```bash
+    docker compose -f docker-compose-multi-worker.yml up -d
+    ```
+
+    This creates:
+    - 1 CAS server
+    - 1 Scheduler
+    - 3 Workers (scalable)
+  </Step>
+
+  <Step title="Test with Bazel">
+    ```bash
+    bazel build //... \
+      --remote_cache=grpc://127.0.0.1:50051 \
+      --remote_executor=grpc://127.0.0.1:50052 \
+      --remote_default_exec_properties=cpu_count=2 \
+      --jobs=10
+    ```
+  </Step>
+</Steps>
+
+### Multi-Worker Configuration
+
+<CodeGroup>
+```yaml docker-compose-multi-worker.yml
+version: '3.8'
+
+services:
+  cas-server:
+    image: nativelink:latest
+    volumes:
+      - cas-data:/data/cas
+      - ./cas-server-multi-worker.json5:/nativelink-config.json5
+    ports:
+      - "50051:50051"
+    environment:
+      - RUST_LOG=info
+    command: nativelink /nativelink-config.json5
+    networks:
+      - nativelink-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:50051/status"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  scheduler:
+    image: nativelink:latest
+    volumes:
+      - ./scheduler-multi-worker.json5:/nativelink-config.json5
+    ports:
+      - "50052:50052"
+      - "50061:50061"
+    environment:
+      - RUST_LOG=info
+      - CAS_ENDPOINT=cas-server
+    command: nativelink /nativelink-config.json5
+    depends_on:
+      cas-server:
+        condition: service_started
+    networks:
+      - nativelink-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:50052/status"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  worker-1:
+    image: nativelink:latest
+    volumes:
+      - cas-data:/data/cas  # Shared CAS volume
+      - worker1-data:/data/worker1
+      - ./worker-shared-cas.json5:/nativelink-config.json5
+    environment:
+      - RUST_LOG=info
+      - SCHEDULER_ENDPOINT=scheduler
+      - CAS_ENDPOINT=cas-server
+      - WORKER_NAME=worker-1
+      - WORKER_ID=worker-1
+    command: nativelink /nativelink-config.json5
+    depends_on:
+      scheduler:
+        condition: service_started
+    networks:
+      - nativelink-network
+    deploy:
+      resources:
+        limits:
+          cpus: '2'
+          memory: 2G
+
+  worker-2:
+    image: nativelink:latest
+    volumes:
+      - cas-data:/data/cas  # Same shared volume
+      - worker2-data:/data/worker2
+      - ./worker-shared-cas.json5:/nativelink-config.json5
+    environment:
+      - RUST_LOG=info
+      - SCHEDULER_ENDPOINT=scheduler
+      - CAS_ENDPOINT=cas-server
+      - WORKER_NAME=worker-2
+      - WORKER_ID=worker-2
+    command: nativelink /nativelink-config.json5
+    depends_on:
+      scheduler:
+        condition: service_started
+    networks:
+      - nativelink-network
+    deploy:
+      resources:
+        limits:
+          cpus: '2'
+          memory: 2G
+
+networks:
+  nativelink-network:
+    driver: bridge
+
+volumes:
+  cas-data:
+    driver: local
+  worker1-data:
+    driver: local
+  worker2-data:
+    driver: local
+```
+
+```json5 worker-shared-cas.json5
+{
+  stores: [
+    {
+      name: "SHARED_CAS",
+      filesystem: {
+        // All workers MUST use the same path
+        content_path: "/data/cas/content",
+        temp_path: "/tmp/${WORKER_NAME}/temp",
+        eviction_policy: {
+          max_bytes: 10000000000,
+        }
+      }
+    }
+  ],
+  workers: [
+    {
+      local: {
+        name: "${WORKER_NAME}",
+        cas_fast_slow_store: "SHARED_CAS",
+        work_directory: "/tmp/${WORKER_NAME}/work",
+        platform_properties: {
+          cpu_count: { values: ["2"] },
+          memory_gb: { values: ["2"] }
+        }
+      }
+    }
+  ]
+}
+```
+</CodeGroup>
+
+## Environment Variables
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `NATIVELINK_DIR` | `~/.cache/nativelink` | Data storage directory |
+| `RUST_LOG` | `warn` | Log level (error, warn, info, debug, trace) |
+| `CAS_ENDPOINT` | `127.0.0.1` | CAS server hostname |
+| `SCHEDULER_ENDPOINT` | `127.0.0.1` | Scheduler hostname |
+| `WORKER_NAME` | - | Unique worker identifier |
+| `WORKER_ID` | - | Worker ID for multi-worker setups |
+
+## Scaling Workers
+
+Dynamically scale the number of workers:
+
+```bash
+# Scale to 5 workers
+docker compose -f docker-compose-multi-worker.yml up -d --scale worker=5
+
+# Scale down to 2 workers
+docker compose -f docker-compose-multi-worker.yml up -d --scale worker=2
+```
+
+## Monitoring
+
+### View Logs
+
+```bash
+# All services
+docker compose logs -f
+
+# Specific service
+docker compose logs -f nativelink_scheduler
+
+# Multi-worker specific worker
+docker compose -f docker-compose-multi-worker.yml logs -f worker-1
+```
+
+### Check Status
+
+```bash
+# Container status
+docker compose ps
+
+# Resource usage
+docker stats
+
+# CAS storage usage
+docker exec -it nativelink_local_cas du -sh ~/.cache/nativelink
+```
+
+### Health Checks
+
+The multi-worker configuration includes health checks:
+
+```yaml
+healthcheck:
+  test: ["CMD", "curl", "-f", "http://localhost:50051/status"]
+  interval: 5s
+  timeout: 5s
+  retries: 5
+```
+
+## Troubleshooting
+
+### "Object not found" Errors
+
+**Symptom**: Workers fail with errors about objects not found in store.
+
+**Cause**: Workers are using different CAS paths.
+
+**Solution**:
+1. Verify all workers mount the same volume:
+   ```bash
+   docker inspect <worker-container> | grep -A 5 Mounts
+   ```
+2. Ensure `content_path` is identical in all worker configs
+3. Use the same shared volume for all workers
+
+### Ports Already in Use
+
+**Symptom**: Cannot start services due to port conflicts.
+
+**Solution**: Change port mappings in `docker-compose.yml`:
+```yaml
+ports:
+  - "50052:50051"  # Map host port 50052 to container port 50051
+```
+
+### Worker Connection Issues
+
+**Symptom**: Workers cannot connect to scheduler.
+
+**Solution**:
+1. Check service networking:
+   ```bash
+   docker network inspect nativelink-network
+   ```
+2. Verify environment variables are set correctly
+3. Check scheduler logs for connection errors
+
+### Out of Disk Space
+
+**Symptom**: Services crash or slow down significantly.
+
+**Solution**:
+1. Increase `max_bytes` in eviction policies
+2. Clean old data:
+   ```bash
+   docker compose down -v  # Removes volumes
+   ```
+3. Use external storage backends
+
+## Volume Management
+
+### Persistent Storage
+
+Data is stored in Docker volumes by default. To use host directories:
+
+```yaml
+volumes:
+  - /path/on/host:/root/.cache/nativelink
+```
+
+### Backup
+
+```bash
+# Backup CAS data
+docker run --rm -v nativelink_cas-data:/data -v $(pwd):/backup \
+  ubuntu tar czf /backup/cas-backup.tar.gz /data
+
+# Restore CAS data
+docker run --rm -v nativelink_cas-data:/data -v $(pwd):/backup \
+  ubuntu tar xzf /backup/cas-backup.tar.gz -C /
+```
+
+### Clean Up
+
+```bash
+# Stop and remove containers
+docker compose down
+
+# Remove volumes (deletes all data)
+docker compose down -v
+
+# Remove images
+docker rmi trace_machina/nativelink:latest
+```
+
+<Note>
+  For production deployments with monitoring, see [Production Deployment](/deployment/production) and integrate with the [metrics stack](/deployment/production#monitoring-setup).
+</Note>

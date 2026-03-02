@@ -1,0 +1,669 @@
+---
+title: Development with Cargo
+description: Develop NativeLink using standard Rust tooling and Cargo
+---
+
+Cargo provides the fastest iteration cycle for Rust development. While Bazel is NativeLink's primary build system, Cargo offers a more traditional Rust development experience with excellent IDE integration.
+
+## Why Use Cargo?
+
+Cargo is ideal when you need:
+
+- **Fast Iteration** - Quick compile-test cycles
+- **IDE Support** - Native rust-analyzer integration
+- **Standard Workflow** - Familiar Rust development patterns
+- **Direct Dependencies** - Transparent dependency management
+- **Debugging** - Better debugger integration
+
+<Note>
+  For production builds and CI, use [Bazel](/contributing/bazel) to ensure reproducibility.
+</Note>
+
+## Setup
+
+### Prerequisites
+
+<Steps>
+  <Step title="Install Rust">
+    Install Rust using [rustup](https://rustup.rs/):
+
+    ```bash
+    curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+    ```
+
+    Verify you have the required version:
+    ```bash
+    rustc --version
+    # Must be >= 1.87.0 (see Cargo.toml:12)
+    ```
+  </Step>
+
+  <Step title="Install System Dependencies">
+    <Tabs>
+      <Tab title="Ubuntu/Debian">
+        ```bash
+        sudo apt install pkg-config libssl-dev build-essential
+        ```
+      </Tab>
+      <Tab title="Arch Linux">
+        ```bash
+        sudo pacman -S pkg-config openssl base-devel
+        ```
+      </Tab>
+      <Tab title="macOS">
+        ```bash
+        brew install openssl pkg-config
+        ```
+      </Tab>
+      <Tab title="Windows">
+        Install [Visual Studio Build Tools](https://visualstudio.microsoft.com/downloads/) with C++ support.
+
+        Or use WSL2 with Linux dependencies.
+      </Tab>
+    </Tabs>
+  </Step>
+
+  <Step title="Install Development Tools">
+    ```bash
+    # rust-analyzer for IDE support
+    rustup component add rust-analyzer
+
+    # rustfmt for code formatting
+    rustup component add rustfmt
+
+    # clippy for linting
+    rustup component add clippy
+    ```
+  </Step>
+</Steps>
+
+## Building
+
+### Basic Build Commands
+
+<Steps>
+  <Step title="Build Main Binary">
+    ```bash
+    # Debug build (fast compile, slower runtime)
+    cargo build
+
+    # Release build (slow compile, fast runtime)
+    cargo build --release
+
+    # Run the binary
+    ./target/release/nativelink --help
+    ```
+  </Step>
+
+  <Step title="Build All Workspace Crates">
+    ```bash
+    cargo build --workspace
+
+    # Or use --all (alias)
+    cargo build --all
+    ```
+  </Step>
+
+  <Step title="Build Specific Crate">
+    ```bash
+    cargo build -p nativelink-config
+    cargo build -p nativelink-store
+    cargo build -p nativelink-worker
+    ```
+  </Step>
+
+  <Step title="Build with Features">
+    ```bash
+    # Enable Nix features
+    cargo build --features nix
+
+    # Build worker with Nix support
+    cargo build -p nativelink-worker --features nix
+    ```
+  </Step>
+</Steps>
+
+### Build Profiles
+
+NativeLink defines custom build profiles in `Cargo.toml`:
+
+<CodeGroup>
+```bash Debug Profile
+# Default dev build
+cargo build
+
+# Fast compile, includes debug symbols
+# Output: target/debug/nativelink
+```
+
+```bash Release Profile
+# Optimized for performance
+cargo build --release
+
+# Uses LTO (Link-Time Optimization)
+# See Cargo.toml:15-16
+# Output: target/release/nativelink
+```
+
+```bash Smol Profile
+# Optimized for size (useful for CI)
+cargo build --profile=smol
+
+# Minimal size, no debug info
+# See Cargo.toml:18-24
+# Reduces target/ from ~12GB to ~1GB
+```
+</CodeGroup>
+
+## Testing
+
+### Running Tests
+
+<Steps>
+  <Step title="Run All Tests">
+    ```bash
+    # Run all tests in workspace
+    cargo test --all
+
+    # Run with output
+    cargo test --all -- --nocapture
+    ```
+  </Step>
+
+  <Step title="Run Specific Crate Tests">
+    ```bash
+    cargo test -p nativelink-store
+    cargo test -p nativelink-scheduler
+    cargo test -p nativelink-worker
+    ```
+  </Step>
+
+  <Step title="Run Specific Test">
+    ```bash
+    # Run test by name
+    cargo test test_function_name
+
+    # Run tests matching pattern
+    cargo test cache --all
+    ```
+  </Step>
+
+  <Step title="Run Doc Tests">
+    ```bash
+    cargo test --doc --all
+    ```
+  </Step>
+</Steps>
+
+### Test Configuration
+
+```bash
+# Run tests with multiple threads
+cargo test --all -- --test-threads=4
+
+# Run tests sequentially
+cargo test --all -- --test-threads=1
+
+# Show test output
+cargo test --all -- --nocapture
+
+# Run ignored tests
+cargo test --all -- --ignored
+
+# Run all tests including ignored
+cargo test --all -- --include-ignored
+```
+
+## Code Quality
+
+### Formatting
+
+<Steps>
+  <Step title="Check Formatting">
+    ```bash
+    cargo fmt --all -- --check
+    ```
+  </Step>
+
+  <Step title="Fix Formatting">
+    ```bash
+    cargo fmt --all
+    ```
+  </Step>
+</Steps>
+
+### Linting with Clippy
+
+<Steps>
+  <Step title="Run Clippy">
+    ```bash
+    # Run clippy on all crates
+    cargo clippy --all
+
+    # Run clippy with warnings as errors
+    cargo clippy --all -- -D warnings
+    ```
+  </Step>
+
+  <Step title="Run Clippy on Tests">
+    ```bash
+    cargo clippy --all --tests
+    ```
+  </Step>
+
+  <Step title="Fix Clippy Warnings">
+    ```bash
+    # Some issues can be auto-fixed
+    cargo clippy --all --fix
+    ```
+  </Step>
+</Steps>
+
+### Lint Configuration
+
+NativeLink enforces strict lints defined in `Cargo.toml:96-213`:
+
+```toml
+# Denied Rust lints (excerpt)
+[workspace.lints.rust]
+future-incompatible = "deny"
+unsafe-op-in-unsafe-fn = "deny"
+unused-imports = "deny"
+
+# Clippy lints (excerpt)
+[workspace.lints.clippy]
+all = { level = "warn", priority = -1 }
+nursery = { level = "warn", priority = -1 }
+pedantic = { level = "warn", priority = -1 }
+todo = "deny"
+await-holding-lock = "deny"
+```
+
+See `Cargo.toml` for the complete list.
+
+## Documentation
+
+### Building Documentation
+
+<Steps>
+  <Step title="Build All Docs">
+    ```bash
+    # Build documentation for workspace
+    cargo doc --workspace --no-deps
+
+    # Open in browser
+    cargo doc --workspace --no-deps --open
+    ```
+  </Step>
+
+  <Step title="Build Specific Crate Docs">
+    ```bash
+    cargo doc -p nativelink-config --open
+    cargo doc -p nativelink-store --open
+    ```
+  </Step>
+
+  <Step title="Include Private Items">
+    ```bash
+    cargo doc --workspace --no-deps --document-private-items
+    ```
+  </Step>
+</Steps>
+
+### Documentation Tests
+
+```bash
+# Run doc tests only
+cargo test --doc --all
+
+# Run doc tests for specific crate
+cargo test --doc -p nativelink-util
+```
+
+## Running NativeLink
+
+### Run with Cargo
+
+<Steps>
+  <Step title="Download Example Config">
+    ```bash
+    curl -O https://raw.githubusercontent.com/TraceMachina/nativelink/main/nativelink-config/examples/basic_cas.json5
+    ```
+  </Step>
+
+  <Step title="Run Development Build">
+    ```bash
+    cargo run -- basic_cas.json5
+    ```
+  </Step>
+
+  <Step title="Run Release Build">
+    ```bash
+    cargo run --release -- basic_cas.json5
+    ```
+  </Step>
+
+  <Step title="Run with Environment Variables">
+    ```bash
+    RUST_LOG=debug cargo run --release -- basic_cas.json5
+    ```
+  </Step>
+</Steps>
+
+### Binary Locations
+
+```bash
+# Debug binary
+./target/debug/nativelink
+
+# Release binary
+./target/release/nativelink
+
+# Smol profile binary
+./target/smol/nativelink
+```
+
+## Workspace Structure
+
+NativeLink uses a Cargo workspace defined in `Cargo.toml:2-7`:
+
+```toml
+[workspace]
+exclude = [
+  "nativelink-config/generate-stores-config",
+  "tools/generate-bazel-rc",
+]
+resolver = "2"
+```
+
+### Workspace Crates
+
+<CardGroup cols={2}>
+  <Card title="nativelink-config" icon="gear">
+    Configuration parsing and validation
+  </Card>
+  <Card title="nativelink-error" icon="triangle-exclamation">
+    Error types and handling
+  </Card>
+  <Card title="nativelink-scheduler" icon="clock">
+    Task scheduling and execution
+  </Card>
+  <Card title="nativelink-service" icon="server">
+    gRPC service implementations
+  </Card>
+  <Card title="nativelink-store" icon="database">
+    Storage backends and caching
+  </Card>
+  <Card title="nativelink-util" icon="wrench">
+    Shared utilities and helpers
+  </Card>
+  <Card title="nativelink-worker" icon="microchip">
+    Remote execution worker
+  </Card>
+  <Card title="nativelink-macro" icon="code">
+    Procedural macros
+  </Card>
+  <Card title="nativelink-proto" icon="message">
+    Protocol buffer definitions
+  </Card>
+  <Card title="nativelink-metric" icon="chart-line">
+    Metrics and telemetry
+  </Card>
+</CardGroup>
+
+## IDE Integration
+
+### rust-analyzer
+
+rust-analyzer works out of the box with Cargo workspaces:
+
+<Steps>
+  <Step title="VS Code Setup">
+    Install the [rust-analyzer extension](https://marketplace.visualstudio.com/items?itemName=rust-lang.rust-analyzer).
+
+    Optional `.vscode/settings.json`:
+    ```json
+    {
+      "rust-analyzer.check.command": "clippy",
+      "rust-analyzer.cargo.features": "all"
+    }
+    ```
+  </Step>
+
+  <Step title="Generate rust-project.json (Alternative)">
+    For better integration with Bazel builds:
+
+    ```bash
+    bazel run @rules_rust//tools/rust_analyzer:gen_rust_project
+    ```
+
+    Then configure:
+    ```json
+    {
+      "rust-analyzer.linkedProjects": ["rust-project.json"]
+    }
+    ```
+  </Step>
+</Steps>
+
+### Debugging
+
+<Tabs>
+  <Tab title="VS Code">
+    Create `.vscode/launch.json`:
+
+    ```json
+    {
+      "version": "0.2.0",
+      "configurations": [
+        {
+          "type": "lldb",
+          "request": "launch",
+          "name": "Debug NativeLink",
+          "cargo": {
+            "args": ["build", "--bin=nativelink"]
+          },
+          "args": ["basic_cas.json5"],
+          "cwd": "${workspaceFolder}"
+        }
+      ]
+    }
+    ```
+
+    Install [CodeLLDB](https://marketplace.visualstudio.com/items?itemName=vadimcn.vscode-lldb) extension.
+  </Tab>
+  <Tab title="Command Line">
+    ```bash
+    # With rust-lldb
+    rust-lldb ./target/debug/nativelink
+
+    # With gdb
+    gdb ./target/debug/nativelink
+    ```
+  </Tab>
+</Tabs>
+
+## Advanced Usage
+
+### Dependency Management
+
+<Steps>
+  <Step title="Update Dependencies">
+    ```bash
+    # Update to latest compatible versions
+    cargo update
+
+    # Update specific dependency
+    cargo update tokio
+    ```
+  </Step>
+
+  <Step title="Check Outdated Dependencies">
+    ```bash
+    # Install cargo-outdated
+    cargo install cargo-outdated
+
+    # Check for updates
+    cargo outdated
+    ```
+  </Step>
+
+  <Step title="Audit Dependencies">
+    ```bash
+    # Install cargo-audit
+    cargo install cargo-audit
+
+    # Check for security vulnerabilities
+    cargo audit
+    ```
+  </Step>
+</Steps>
+
+### Build Performance
+
+<Tabs>
+  <Tab title="Parallel Builds">
+    ```bash
+    # Use all CPU cores (default)
+    cargo build --release
+
+    # Limit parallel jobs
+    cargo build --release -j 4
+    ```
+  </Tab>
+  <Tab title="Incremental Compilation">
+    ```bash
+    # Enabled by default for debug builds
+    # Disable if needed:
+    CARGO_INCREMENTAL=0 cargo build
+    ```
+  </Tab>
+  <Tab title="Build Cache">
+    ```bash
+    # Use sccache for distributed caching
+    cargo install sccache
+    export RUSTC_WRAPPER=sccache
+
+    cargo build --release
+    ```
+  </Tab>
+</Tabs>
+
+### Cross-Compilation
+
+```bash
+# Install target
+rustup target add x86_64-unknown-linux-musl
+rustup target add aarch64-unknown-linux-musl
+
+# Build for target
+cargo build --release --target x86_64-unknown-linux-musl
+
+# Static linking (musl)
+cargo build --release --target x86_64-unknown-linux-musl
+```
+
+## Troubleshooting
+
+<AccordionGroup>
+  <Accordion title="Cargo fails with OpenSSL errors">
+    Install OpenSSL development headers:
+
+    ```bash
+    # Ubuntu/Debian
+    sudo apt install libssl-dev
+
+    # Arch Linux
+    sudo pacman -S openssl
+
+    # macOS
+    brew install openssl
+    ```
+
+    Or use vendored OpenSSL (if available):
+    ```bash
+    cargo build --features vendored-openssl
+    ```
+  </Accordion>
+
+  <Accordion title="Linker errors on macOS">
+    Ensure Xcode Command Line Tools are installed:
+
+    ```bash
+    xcode-select --install
+    ```
+  </Accordion>
+
+  <Accordion title="Out of disk space">
+    Clean build artifacts:
+
+    ```bash
+    cargo clean
+
+    # Or clean specific profile
+    rm -rf target/debug
+    rm -rf target/release
+    ```
+  </Accordion>
+
+  <Accordion title="Slow incremental builds">
+    Clear incremental compilation cache:
+
+    ```bash
+    rm -rf target/debug/incremental
+    rm -rf target/release/incremental
+    ```
+  </Accordion>
+
+  <Accordion title="Clippy or rustfmt version mismatch">
+    Update Rust toolchain:
+
+    ```bash
+    rustup update
+    rustup component add clippy rustfmt
+    ```
+  </Accordion>
+</AccordionGroup>
+
+## Cargo Tools
+
+<CardGroup cols={2}>
+  <Card title="cargo-watch" icon="eye">
+    Auto-rebuild on file changes
+    ```bash
+    cargo install cargo-watch
+    cargo watch -x build
+    ```
+  </Card>
+  <Card title="cargo-bloat" icon="chart-pie">
+    Find what takes space in binaries
+    ```bash
+    cargo install cargo-bloat
+    cargo bloat --release
+    ```
+  </Card>
+  <Card title="cargo-tree" icon="diagram-project">
+    Show dependency tree (built-in)
+    ```bash
+    cargo tree
+    ```
+  </Card>
+  <Card title="cargo-expand" icon="maximize">
+    Expand macros
+    ```bash
+    cargo install cargo-expand
+    cargo expand
+    ```
+  </Card>
+</CardGroup>
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Development with Bazel" icon="cube" href="/contributing/bazel">
+    Production builds and remote execution
+  </Card>
+  <Card title="Development with Nix" icon="snowflake" href="/contributing/nix">
+    Reproducible development environment
+  </Card>
+</CardGroup>

@@ -1,0 +1,776 @@
+---
+title: Production Deployment
+description: Best practices and guidelines for deploying NativeLink in production environments
+---
+
+This guide covers production deployment best practices, monitoring, security, and operational considerations for running NativeLink at scale.
+
+## Architecture Overview
+
+A production NativeLink deployment typically consists of:
+
+- **CAS Servers**: Content Addressable Storage (1+ replicas)
+- **Scheduler**: Job scheduling and distribution (1+ replicas)
+- **Workers**: Build execution nodes (auto-scaled)
+- **Storage Backend**: S3, GCS, or distributed filesystem
+- **Monitoring**: Prometheus, Grafana, OpenTelemetry
+- **Load Balancer**: gRPC-capable load balancer
+
+```
+┌─────────────┐
+│   Clients   │
+└──────┬──────┘
+       │
+┌──────▼──────────┐
+│ Load Balancer   │
+└──────┬──────────┘
+       │
+   ┌───┴────┬────────────┬───────────┐
+   │        │            │           │
+┌──▼───┐ ┌─▼──┐  ┌─────▼─────┐  ┌──▼────────┐
+│ CAS  │ │ AC │  │ Scheduler │  │ Telemetry │
+└──┬───┘ └─┬──┘  └─────┬─────┘  └───────────┘
+   │       │           │
+   └───────┴─────┬─────┘
+                 │
+         ┌───────┴────────┐
+         │                │
+    ┌────▼────┐      ┌────▼────┐
+    │ Worker  │ ...  │ Worker  │
+    └─────────┘      └─────────┘
+         │                │
+    ┌────▼────────────────▼────┐
+    │   Shared CAS Storage     │
+    │   (S3/GCS/NFS)          │
+    └─────────────────────────┘
+```
+
+## Storage Strategy
+
+### Cloud Object Storage
+
+For production, use cloud object storage (S3, GCS, Azure Blob) as the primary backend:
+
+<CodeGroup>
+```json5 AWS S3
+{
+  stores: [
+    {
+      name: "CAS_PRODUCTION",
+      verify: {
+        verify_size: true,
+        backend: {
+          dedup: {
+            index_store: {
+              fast_slow: {
+                fast: {
+                  memory: { eviction_policy: { max_bytes: 2000000000 } }, // 2GB
+                },
+                slow: {
+                  experimental_cloud_object_store: {
+                    provider: "aws",
+                    region: "us-east-1",
+                    bucket: "nativelink-cas-index",
+                    key_prefix: "prod/index/",
+                    retry: {
+                      max_retries: 6,
+                      delay: 0.3,
+                      jitter: 0.5,
+                    },
+                  },
+                },
+              },
+            },
+            content_store: {
+              compression: {
+                compression_algorithm: { lz4: {} },
+                backend: {
+                  fast_slow: {
+                    fast: {
+                      memory: { eviction_policy: { max_bytes: 5000000000 } }, // 5GB
+                    },
+                    slow: {
+                      experimental_cloud_object_store: {
+                        provider: "aws",
+                        region: "us-east-1",
+                        bucket: "nativelink-cas-content",
+                        key_prefix: "prod/content/",
+                        retry: {
+                          max_retries: 6,
+                          delay: 0.3,
+                          jitter: 0.5,
+                        },
+                      },
+                    },
+                  },
+                },
+              },
+            },
+          },
+        },
+      },
+    },
+  ],
+}
+```
+
+```json5 Google Cloud Storage
+{
+  stores: [
+    {
+      name: "CAS_PRODUCTION",
+      compression: {
+        compression_algorithm: { lz4: {} },
+        backend: {
+          fast_slow: {
+            fast: {
+              redis_store: {
+                addresses: ["redis://cache-1:6379", "redis://cache-2:6379"],
+                mode: "cluster",
+              },
+            },
+            slow: {
+              experimental_cloud_object_store: {
+                provider: "gcs",
+                bucket: "nativelink-prod-cas",
+                key_prefix: "cas/",
+                retry: {
+                  max_retries: 6,
+                  delay: 0.3,
+                  jitter: 0.5,
+                },
+              },
+            },
+          },
+        },
+      },
+    },
+  ],
+}
+```
+</CodeGroup>
+
+### Storage Best Practices
+
+<Steps>
+  <Step title="Use tiered storage">
+    Combine fast (Redis/memory) and slow (S3/GCS) tiers for optimal performance:
+    - Memory tier: 2-5GB for hot data
+    - Redis tier: 50-100GB for frequently accessed objects
+    - Cloud storage: Unlimited long-term storage
+  </Step>
+
+  <Step title="Enable compression">
+    Use LZ4 compression to reduce storage costs and network bandwidth:
+    ```json5
+    compression: {
+      compression_algorithm: { lz4: {} },
+      backend: { /* ... */ },
+    }
+    ```
+  </Step>
+
+  <Step title="Configure lifecycle policies">
+    Set up S3/GCS lifecycle policies to archive or delete old objects:
+    - Transition to cheaper storage after 90 days
+    - Delete objects older than 1 year
+  </Step>
+
+  <Step title="Use separate buckets">
+    Separate CAS index, CAS content, and AC into different buckets for better organization and access control.
+  </Step>
+</Steps>
+
+<Warning>
+  Always enable `verify_size: true` in production to detect corrupted data.
+</Warning>
+
+## High Availability
+
+### Scheduler Redundancy
+
+Run multiple scheduler replicas with a load balancer:
+
+```yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: nativelink-scheduler
+spec:
+  replicas: 3
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+  template:
+    spec:
+      affinity:
+        podAntiAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            - labelSelector:
+                matchExpressions:
+                  - key: app
+                    operator: In
+                    values:
+                      - nativelink-scheduler
+              topologyKey: kubernetes.io/hostname
+      containers:
+        - name: scheduler
+          image: trace_machina/nativelink:v0.5.0
+          resources:
+            requests:
+              memory: "4Gi"
+              cpu: "2000m"
+            limits:
+              memory: "8Gi"
+              cpu: "4000m"
+```
+
+### CAS Server Redundancy
+
+```yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: nativelink-cas
+spec:
+  replicas: 3
+  template:
+    spec:
+      containers:
+        - name: cas
+          resources:
+            requests:
+              memory: "8Gi"
+              cpu: "4000m"
+            limits:
+              memory: "16Gi"
+              cpu: "8000m"
+```
+
+### Load Balancing
+
+Use gRPC-aware load balancing:
+
+<CodeGroup>
+```yaml Kubernetes Service
+apiVersion: v1
+kind: Service
+metadata:
+  name: nativelink
+  annotations:
+    service.beta.kubernetes.io/aws-load-balancer-type: "nlb"
+    service.beta.kubernetes.io/aws-load-balancer-backend-protocol: "tcp"
+spec:
+  type: LoadBalancer
+  sessionAffinity: ClientIP
+  sessionAffinityConfig:
+    clientIP:
+      timeoutSeconds: 10800  # 3 hours
+  ports:
+    - name: grpc-cas
+      port: 50051
+      targetPort: 50051
+      protocol: TCP
+    - name: grpc-scheduler
+      port: 50052
+      targetPort: 50052
+      protocol: TCP
+```
+
+```nginx Nginx gRPC Proxy
+upstream nativelink_cas {
+    server cas-1.internal:50051;
+    server cas-2.internal:50051;
+    server cas-3.internal:50051;
+}
+
+upstream nativelink_scheduler {
+    server scheduler-1.internal:50052;
+    server scheduler-2.internal:50052;
+    server scheduler-3.internal:50052;
+}
+
+server {
+    listen 50051 http2;
+    
+    location / {
+        grpc_pass grpc://nativelink_cas;
+        grpc_set_header X-Real-IP $remote_addr;
+    }
+}
+
+server {
+    listen 50052 http2;
+    
+    location / {
+        grpc_pass grpc://nativelink_scheduler;
+        grpc_set_header X-Real-IP $remote_addr;
+    }
+}
+```
+</CodeGroup>
+
+## Security
+
+### TLS/SSL Encryption
+
+Always use TLS in production:
+
+```json5
+servers: [
+  {
+    listener: {
+      http: {
+        socket_address: "0.0.0.0:50051",
+        tls: {
+          cert_file: "/certs/server.crt",
+          key_file: "/certs/server.key",
+          ca_file: "/certs/ca.crt",
+          verify_client: true,  // mTLS
+        },
+      },
+    },
+  },
+]
+```
+
+### Certificate Management
+
+Use cert-manager for automated certificate rotation:
+
+```yaml
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: nativelink-tls
+spec:
+  secretName: nativelink-tls
+  issuerRef:
+    name: letsencrypt-prod
+    kind: ClusterIssuer
+  dnsNames:
+    - nativelink.example.com
+    - cas.nativelink.example.com
+    - scheduler.nativelink.example.com
+```
+
+### Network Policies
+
+Restrict network access:
+
+```yaml
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: nativelink-policy
+spec:
+  podSelector:
+    matchLabels:
+      app: nativelink
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              name: build-clients
+      ports:
+        - protocol: TCP
+          port: 50051
+        - protocol: TCP
+          port: 50052
+  egress:
+    - to:
+        - podSelector:
+            matchLabels:
+              app: nativelink-worker
+      ports:
+        - protocol: TCP
+          port: 50061
+```
+
+### Access Control
+
+<Warning>
+  Never expose the worker API (port 50061) publicly. It should only be accessible to workers within your network.
+</Warning>
+
+## Monitoring Setup
+
+### Prometheus and Grafana
+
+Deploy comprehensive monitoring:
+
+<CodeGroup>
+```yaml docker-compose.yaml
+version: '3.8'
+
+services:
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:0.98.0
+    command: ["--config=/etc/otel-collector/config.yaml"]
+    volumes:
+      - ./otel-collector-config.yaml:/etc/otel-collector/config.yaml:ro
+    ports:
+      - "4317:4317"   # OTLP gRPC
+      - "4318:4318"   # OTLP HTTP
+      - "9090:9090"   # Prometheus exporter
+
+  prometheus:
+    image: prom/prometheus:v3.0.0
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--storage.tsdb.retention.time=30d'
+      - '--web.enable-otlp-receiver'
+    volumes:
+      - ./prometheus-config.yaml:/etc/prometheus/prometheus.yml:ro
+      - prometheus_data:/prometheus
+    ports:
+      - "9091:9090"
+
+  grafana:
+    image: grafana/grafana:12.4.0
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=changeme
+      - GF_INSTALL_PLUGINS=grafana-piechart-panel
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./grafana/dashboards:/var/lib/grafana/dashboards:ro
+    ports:
+      - "3000:3000"
+
+  alertmanager:
+    image: prom/alertmanager:v0.27.0
+    volumes:
+      - ./alertmanager-config.yml:/etc/alertmanager/config.yml:ro
+    ports:
+      - "9093:9093"
+
+volumes:
+  prometheus_data:
+  grafana_data:
+```
+
+```yaml prometheus-config.yaml
+global:
+  scrape_interval: 30s
+  evaluation_interval: 30s
+
+scrape_configs:
+  - job_name: 'nativelink'
+    static_configs:
+      - targets: ['nativelink:9090']
+    metric_relabel_configs:
+      - source_labels: [__name__]
+        regex: 'nativelink_.*'
+        action: keep
+
+  - job_name: 'nativelink-workers'
+    kubernetes_sd_configs:
+      - role: pod
+        namespaces:
+          names:
+            - nativelink
+    relabel_configs:
+      - source_labels: [__meta_kubernetes_pod_label_app]
+        regex: nativelink-worker
+        action: keep
+
+rule_files:
+  - /etc/prometheus/rules/nativelink.yml
+
+alerting:
+  alertmanagers:
+    - static_configs:
+        - targets: ['alertmanager:9093']
+```
+</CodeGroup>
+
+### Key Metrics
+
+Monitor these critical metrics:
+
+| Metric | Description | Alert Threshold |
+|--------|-------------|----------------|
+| `nativelink_scheduler_queue_length` | Pending jobs | > 100 |
+| `nativelink_worker_active_count` | Active workers | < 2 |
+| `nativelink_cas_hit_rate` | Cache hit ratio | < 0.7 |
+| `nativelink_request_duration_seconds` | Request latency | p99 > 5s |
+| `nativelink_store_size_bytes` | Storage usage | > 0.9 * max |
+| `nativelink_worker_execution_failures` | Failed executions | > 5 per minute |
+
+### OpenTelemetry Configuration
+
+Configure NativeLink to export telemetry:
+
+```bash
+export OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector:4317
+export OTEL_EXPORTER_OTLP_PROTOCOL=grpc
+export OTEL_SERVICE_NAME=nativelink
+export OTEL_RESOURCE_ATTRIBUTES="deployment.environment=production,service.version=v0.5.0"
+export OTEL_EXPORTER_OTLP_COMPRESSION=zstd
+export RUST_LOG=info
+```
+
+### Alert Rules
+
+```yaml prometheus-alerts.yml
+groups:
+  - name: nativelink
+    interval: 30s
+    rules:
+      - alert: HighQueueLength
+        expr: nativelink_scheduler_queue_length > 100
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High job queue length"
+          description: "Queue has {{ $value }} pending jobs"
+
+      - alert: LowCacheHitRate
+        expr: rate(nativelink_cas_hits[5m]) / rate(nativelink_cas_requests[5m]) < 0.7
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Low cache hit rate"
+          description: "Cache hit rate is {{ $value | humanizePercentage }}"
+
+      - alert: WorkerDown
+        expr: nativelink_worker_active_count < 2
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Insufficient workers"
+          description: "Only {{ $value }} workers active"
+
+      - alert: HighErrorRate
+        expr: rate(nativelink_request_errors_total[5m]) > 0.05
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "High error rate"
+          description: "Error rate is {{ $value | humanizePercentage }}"
+```
+
+## Auto-Scaling
+
+### Horizontal Pod Autoscaling
+
+```yaml
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: nativelink-worker-hpa
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: nativelink-worker
+  minReplicas: 5
+  maxReplicas: 50
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 70
+    - type: Pods
+      pods:
+        metric:
+          name: nativelink_queue_length
+        target:
+          type: AverageValue
+          averageValue: "10"
+  behavior:
+    scaleUp:
+      stabilizationWindowSeconds: 60
+      policies:
+        - type: Percent
+          value: 100
+          periodSeconds: 60
+        - type: Pods
+          value: 5
+          periodSeconds: 60
+      selectPolicy: Max
+    scaleDown:
+      stabilizationWindowSeconds: 300
+      policies:
+        - type: Percent
+          value: 50
+          periodSeconds: 60
+```
+
+### KEDA Scaling
+
+For more advanced scaling based on queue metrics:
+
+```yaml
+apiVersion: keda.sh/v1alpha1
+kind: ScaledObject
+metadata:
+  name: nativelink-worker-scaler
+spec:
+  scaleTargetRef:
+    name: nativelink-worker
+  minReplicaCount: 5
+  maxReplicaCount: 100
+  cooldownPeriod: 300
+  pollingInterval: 15
+  triggers:
+    - type: prometheus
+      metadata:
+        serverAddress: http://prometheus.monitoring.svc:9090
+        metricName: nativelink_queue_length
+        query: |
+          sum(nativelink_scheduler_queue_length)
+        threshold: '20'
+```
+
+## Backup and Disaster Recovery
+
+### Configuration Backup
+
+```bash
+# Backup Kubernetes configs
+kubectl get configmap nativelink-config -o yaml > backup/config-$(date +%Y%m%d).yaml
+kubectl get secret nativelink-tls -o yaml > backup/tls-$(date +%Y%m%d).yaml
+
+# Version control
+git add backup/
+git commit -m "Backup $(date +%Y%m%d)"
+git push
+```
+
+### Data Recovery
+
+With cloud object storage (S3/GCS), data is automatically replicated. Enable versioning:
+
+```bash
+# AWS S3
+aws s3api put-bucket-versioning \
+  --bucket nativelink-cas-content \
+  --versioning-configuration Status=Enabled
+
+# GCS
+gsutil versioning set on gs://nativelink-prod-cas
+```
+
+### Incident Response Plan
+
+<Steps>
+  <Step title="Detect incident">
+    Monitor alerts from Prometheus/Alertmanager
+  </Step>
+
+  <Step title="Assess impact">
+    Check affected services and users
+  </Step>
+
+  <Step title="Mitigate">
+    - Scale up workers if queue is backed up
+    - Restart affected pods
+    - Failover to backup region if available
+  </Step>
+
+  <Step title="Recover">
+    - Restore from backups if necessary
+    - Verify data integrity
+    - Resume normal operations
+  </Step>
+
+  <Step title="Post-mortem">
+    - Document incident
+    - Identify root cause
+    - Implement preventive measures
+  </Step>
+</Steps>
+
+## Performance Tuning
+
+### Resource Allocation
+
+**CAS Server:**
+- CPU: 4-8 cores
+- Memory: 8-16GB
+- Disk I/O: High-performance SSD or network-attached storage
+
+**Scheduler:**
+- CPU: 2-4 cores
+- Memory: 4-8GB
+
+**Worker:**
+- CPU: Based on build workload (4-32 cores)
+- Memory: 2GB per CPU core
+- Disk: 100GB+ for work directory
+
+### Connection Pooling
+
+```json5
+servers: [
+  {
+    listener: {
+      http: {
+        socket_address: "0.0.0.0:50051",
+        advanced_http: {
+          http2_keepalive_interval: 30,
+          http2_keepalive_timeout: 10,
+          max_concurrent_streams: 1000,
+        },
+      },
+    },
+  },
+]
+```
+
+### File Descriptor Limits
+
+```json5
+global: {
+  max_open_files: 65536,
+}
+```
+
+Set system limits:
+```bash
+# /etc/security/limits.conf
+* soft nofile 65536
+* hard nofile 65536
+```
+
+## Cost Optimization
+
+<Steps>
+  <Step title="Use spot instances for workers">
+    Workers are stateless and can tolerate interruptions
+  </Step>
+
+  <Step title="Configure aggressive cache eviction">
+    Set appropriate `max_bytes` to avoid over-provisioning
+  </Step>
+
+  <Step title="Use S3 Intelligent-Tiering">
+    Automatically move infrequently accessed data to cheaper tiers
+  </Step>
+
+  <Step title="Enable compression">
+    Reduce storage costs by 60-80% with LZ4 compression
+  </Step>
+
+  <Step title="Implement lifecycle policies">
+    Delete or archive old build artifacts after 90 days
+  </Step>
+</Steps>
+
+<Note>
+  For Docker-based monitoring setup, see the complete configuration in [deployment-examples/metrics/docker-compose.yaml](https://github.com/TraceMachina/nativelink/blob/main/deployment-examples/metrics/docker-compose.yaml).
+</Note>

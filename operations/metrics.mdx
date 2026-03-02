@@ -1,0 +1,450 @@
+---
+title: Metrics and Instrumentation
+description: Complete reference of metrics exported by NativeLink for monitoring cache and execution performance
+---
+
+NativeLink exposes metrics through OpenTelemetry that provide detailed insights into cache operations, remote execution, and system performance.
+
+<Note>
+Counter metrics are exposed with a `_total` suffix when using OTLP ingestion (e.g., `nativelink_execution_completed_count_total`). The deployment examples and included dashboards use this naming convention.
+</Note>
+
+## Cache Metrics
+
+### Operations Counter
+
+**Metric**: `nativelink_cache_operations_total`  
+**Type**: Counter  
+**Description**: Total number of cache operations performed
+
+**Labels**:
+- `cache_type`: Type of cache (cas, ac, memory, filesystem)
+- `cache_operation_name`: Operation type (read, write, delete, evict)
+- `cache_operation_result`: Operation outcome (hit, miss, expired, success, error)
+
+#### Operation Names
+
+<Accordion title="read">
+  Data retrieval operations. Check `cache_operation_result` for hit/miss status.
+</Accordion>
+
+<Accordion title="write">
+  Data storage operations. Result is typically `success` or `error`.
+</Accordion>
+
+<Accordion title="delete">
+  Explicit removal operations initiated by clients or cleanup processes.
+</Accordion>
+
+<Accordion title="evict">
+  Automatic evictions due to LRU policy, TTL expiration, or size constraints.
+</Accordion>
+
+#### Operation Results
+
+<Accordion title="hit">
+  Data found and valid (reads only). Indicates successful cache retrieval.
+</Accordion>
+
+<Accordion title="miss">
+  Data not found (reads only). Requires fetching from upstream or recomputation.
+</Accordion>
+
+<Accordion title="expired">
+  Data found but stale (reads only). May trigger revalidation.
+</Accordion>
+
+<Accordion title="success">
+  Operation completed successfully (writes/deletes).
+</Accordion>
+
+<Accordion title="error">
+  Operation failed due to I/O error, permission issue, or other failure.
+</Accordion>
+
+### Operation Duration
+
+**Metric**: `nativelink_cache_operation_duration`  
+**Type**: Histogram  
+**Description**: Cache operation latency in milliseconds
+
+**Labels**:
+- `cache_type`: Type of cache
+- `cache_operation_name`: Operation type
+
+**Buckets**: Configured by OpenTelemetry SDK defaults
+
+### I/O Throughput
+
+**Metric**: `nativelink_cache_io_total`  
+**Type**: Counter  
+**Description**: Total bytes read from or written to cache
+
+**Labels**:
+- `cache_type`: Type of cache
+- `cache_operation_name`: Operation type (read, write)
+
+### Cache Size
+
+**Metric**: `nativelink_cache_size`  
+**Type**: Gauge  
+**Description**: Current cache size in bytes
+
+**Labels**:
+- `cache_type`: Type of cache
+
+### Entry Count
+
+**Metric**: `nativelink_cache_entries`  
+**Type**: Gauge  
+**Description**: Number of entries currently in cache
+
+**Labels**:
+- `cache_type`: Type of cache
+
+### Item Size Distribution
+
+**Metric**: `nativelink_cache_item_size`  
+**Type**: Histogram  
+**Description**: Size distribution of cached entries in bytes
+
+**Labels**:
+- `cache_type`: Type of cache
+
+## Execution Metrics
+
+### Stage Duration
+
+**Metric**: `nativelink_execution_stage_duration`  
+**Type**: Histogram  
+**Description**: Time spent in each execution stage in milliseconds
+
+**Labels**:
+- `execution_stage`: Stage name (unknown, cache_check, queued, executing, completed)
+
+#### Execution Stages
+
+<Accordion title="unknown">
+  Initial state before processing begins.
+</Accordion>
+
+<Accordion title="cache_check">
+  Checking action cache for previously computed results.
+</Accordion>
+
+<Accordion title="queued">
+  Waiting for available worker to execute the action.
+</Accordion>
+
+<Accordion title="executing">
+  Running on worker. Duration depends on action complexity.
+</Accordion>
+
+<Accordion title="completed">
+  Finished execution, results available.
+</Accordion>
+
+### Total Duration
+
+**Metric**: `nativelink_execution_total_duration`  
+**Type**: Histogram  
+**Description**: Total execution time from submission to completion in milliseconds
+
+**Labels**:
+- `execution_instance`: Instance identifier
+
+### Queue Time
+
+**Metric**: `nativelink_execution_queue_time`  
+**Type**: Histogram  
+**Description**: Time spent waiting in queue before execution starts
+
+**Labels**:
+- `execution_priority`: Priority level of the action
+
+### Active Count
+
+**Metric**: `nativelink_execution_active_count`  
+**Type**: Gauge  
+**Description**: Current number of actions in each stage
+
+**Labels**:
+- `execution_stage`: Stage name
+
+### Completed Count
+
+**Metric**: `nativelink_execution_completed_count_total`  
+**Type**: Counter  
+**Description**: Total number of completed executions
+
+**Labels**:
+- `execution_result`: Result type (success, failure, cancelled, timeout, cache_hit)
+- `execution_action_digest`: Action digest (high cardinality - use with caution)
+
+#### Execution Results
+
+<Accordion title="success">
+  Action completed with exit code 0.
+</Accordion>
+
+<Accordion title="failure">
+  Action completed with non-zero exit code.
+</Accordion>
+
+<Accordion title="cancelled">
+  Execution was cancelled by client or scheduler.
+</Accordion>
+
+<Accordion title="timeout">
+  Execution exceeded configured timeout.
+</Accordion>
+
+<Accordion title="cache_hit">
+  Result found in action cache, execution skipped.
+</Accordion>
+
+### Stage Transitions
+
+**Metric**: `nativelink_execution_stage_transitions_total`  
+**Type**: Counter  
+**Description**: Number of stage transition events
+
+**Labels**:
+- `execution_instance`: Instance identifier
+- `execution_priority`: Priority level
+
+### Output Size
+
+**Metric**: `nativelink_execution_output_size`  
+**Type**: Histogram  
+**Description**: Size of execution outputs in bytes
+
+### Retry Count
+
+**Metric**: `nativelink_execution_retry_count_total`  
+**Type**: Counter  
+**Description**: Number of execution retries due to failures
+
+## Recording Rules
+
+NativeLink includes pre-configured recording rules for common queries. These rules pre-calculate expensive queries for better dashboard performance.
+
+### Execution Recording Rules
+
+**Rule**: `nativelink:execution_success_rate`  
+**Expression**: Success rate over 5-minute window
+
+```promql
+sum by (instance_name, execution_instance) (
+  rate(nativelink_execution_completed_count_total{execution_result="success"}[5m])
+) /
+sum by (instance_name, execution_instance) (
+  rate(nativelink_execution_completed_count_total[5m])
+)
+```
+
+**Rule**: `nativelink:execution_queue_time_p95`  
+**Expression**: 95th percentile queue time
+
+```promql
+histogram_quantile(0.95,
+  sum by (le, instance_name, execution_instance) (
+    rate(nativelink_execution_queue_time_bucket[5m])
+  )
+)
+```
+
+### Cache Recording Rules
+
+**Rule**: `nativelink:cache_hit_rate`  
+**Expression**: Cache hit rate by cache type
+
+```promql
+sum by (cache_type, instance_name) (
+  rate(nativelink_cache_operations_total{cache_operation_result="hit"}[5m])
+) /
+sum by (cache_type, instance_name) (
+  rate(nativelink_cache_operations_total{cache_operation_name="read"}[5m])
+)
+```
+
+**Rule**: `nativelink:cache_operation_latency_p95`  
+**Expression**: 95th percentile cache operation latency
+
+```promql
+histogram_quantile(0.95,
+  sum by (le, cache_type, cache_operation_name, instance_name) (
+    rate(nativelink_cache_operation_duration_bucket[5m])
+  )
+)
+```
+
+### Performance Recording Rules
+
+**Rule**: `nativelink:system_throughput`  
+**Expression**: Overall system throughput in actions per second
+
+```promql
+sum(rate(nativelink_execution_completed_count_total[5m]))
+```
+
+**Rule**: `nativelink:worker_utilization`  
+**Expression**: Percentage of workers actively executing
+
+```promql
+count by (instance_name) (
+  nativelink_execution_active_count{execution_stage="executing"} > 0
+) /
+count by (instance_name) (
+  nativelink_execution_active_count
+)
+```
+
+**Rule**: `nativelink:queue_depth`  
+**Expression**: Number of actions waiting in queue
+
+```promql
+sum by (instance_name, execution_priority) (
+  nativelink_execution_active_count{execution_stage="queued"}
+)
+```
+
+## SLO Recording Rules
+
+Service Level Objective (SLO) rules track longer-term performance targets.
+
+**Rule**: `nativelink:slo_execution_success_rate`  
+**Target**: 99% of executions complete successfully
+
+```promql
+sum(rate(nativelink_execution_completed_count_total{execution_result="success"}[1h])) /
+sum(rate(nativelink_execution_completed_count_total[1h]))
+```
+
+**Rule**: `nativelink:slo_cache_read_latency`  
+**Target**: 95% of cache reads under 100ms
+
+```promql
+histogram_quantile(0.95,
+  sum(rate(nativelink_cache_operation_duration_bucket{cache_operation_name="read"}[1h])) by (le)
+) < 0.1
+```
+
+**Rule**: `nativelink:slo_queue_time`  
+**Target**: Queue time under 30s for 90% of actions
+
+```promql
+histogram_quantile(0.9,
+  sum(rate(nativelink_execution_queue_time_bucket[1h])) by (le)
+) < 30
+```
+
+## Resource Attributes
+
+Metrics include resource attributes that can be promoted to labels for filtering:
+
+<CardGroup cols={2}>
+  <Card title="Service Attributes">
+    - `service.instance.id`
+    - `service.name`
+    - `service.namespace`
+    - `service.version`
+  </Card>
+
+  <Card title="Cloud Attributes">
+    - `cloud.availability_zone`
+    - `cloud.region`
+    - `deployment.environment`
+  </Card>
+
+  <Card title="Kubernetes Attributes">
+    - `k8s.cluster.name`
+    - `k8s.namespace.name`
+    - `k8s.pod.name`
+    - `k8s.deployment.name`
+  </Card>
+
+  <Card title="NativeLink Attributes">
+    - `nativelink.instance_name`
+    - `nativelink.worker_id`
+    - `nativelink.scheduler_name`
+  </Card>
+</CardGroup>
+
+### Promoting Resource Attributes
+
+Configure Prometheus to promote resource attributes to labels:
+
+```yaml prometheus-config.yaml
+otlp:
+  promote_resource_attributes:
+    - nativelink.instance_name
+    - nativelink.worker_id
+    - k8s.cluster.name
+    - deployment.environment
+```
+
+## Collector Configuration
+
+The OpenTelemetry Collector can transform metrics before export:
+
+```yaml otel-collector-config.yaml
+processors:
+  # Add resource attributes
+  resource:
+    attributes:
+      - key: deployment.environment
+        from_attribute: deployment_environment
+        action: insert
+
+  # Transform metrics
+  transform/nativelink:
+    metric_statements:
+      - context: datapoint
+        statements:
+          - set(attributes["instance_name"], resource.attributes["nativelink.instance_name"])
+            where resource.attributes["nativelink.instance_name"] != nil
+
+  # Batch for efficiency
+  batch:
+    timeout: 10s
+    send_batch_size: 1024
+```
+
+## Metric Cardinality
+
+<Warning>
+High-cardinality labels like `execution_action_digest` can cause performance issues in Prometheus. Use recording rules to aggregate these metrics before querying.
+</Warning>
+
+### Low-Cardinality Labels (Safe)
+
+- `cache_type`
+- `cache_operation_name`
+- `execution_stage`
+- `execution_result`
+- `instance_name`
+
+### High-Cardinality Labels (Use with Caution)
+
+- `execution_action_digest` - Unique per action
+- `execution_worker_id` - One per worker
+- Individual file paths or digests
+
+### Best Practices
+
+1. **Use recording rules** to pre-aggregate high-cardinality metrics
+2. **Drop unnecessary labels** in the OTEL Collector
+3. **Set retention policies** based on cardinality
+4. **Monitor Prometheus memory** usage
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Monitoring Setup" icon="chart-line" href="/operations/monitoring">
+    Configure Prometheus and Grafana
+  </Card>
+  <Card title="Troubleshooting" icon="wrench" href="/operations/troubleshooting">
+    Debug metrics collection issues
+  </Card>
+</CardGroup>

@@ -1,0 +1,202 @@
+---
+title: "Filesystem Store"
+description: "Persistent local disk storage for build artifacts and cache data"
+---
+
+## Overview
+
+The Filesystem store provides persistent local storage by storing data on the filesystem. This store is designed for local persistent storage where restarts preserve state, making it ideal for standalone deployments or worker nodes that need durable local caching.
+
+## Use Cases
+
+- **Local development environments**: Fast, persistent storage for development and testing
+- **Worker node caching**: Persistent cache on worker machines to survive restarts
+- **Standalone deployments**: Single-machine installations without cloud storage
+- **Fast local tier**: Primary storage in fast-slow configurations with network-backed slow tier
+
+## Performance Characteristics
+
+- **Read performance**: Depends on disk I/O capabilities (SSD recommended)
+- **Write performance**: Controlled by `max_concurrent_writes` to prevent disk saturation
+- **Durability**: Data survives restarts as long as filesystem integrity holds
+- **Startup time**: Content path is scanned on bootup; files not matching criteria are deleted
+
+## Configuration
+
+<ParamField path="content_path" type="string" required>
+  Path on the system where to store the actual content. This is where the bulk of the data will be placed.
+  
+  On service bootup this folder will be scanned and all files will be added to the cache. Files that don't match the criteria will be deleted.
+  
+  Supports shell expansion (e.g., `~/.cache/nativelink`).
+</ParamField>
+
+<ParamField path="temp_path" type="string" required>
+  A temporary location where files being uploaded or deleted will be placed while content cannot be guaranteed to be accurate.
+  
+  **Important**: This location must be on the same block device as `content_path` so atomic moves can happen (move without copy).
+  
+  All files in this folder are deleted on every startup.
+</ParamField>
+
+<ParamField path="eviction_policy" type="EvictionPolicy">
+  Policy used to evict items out of the store. Failure to set this value will cause items to never be removed from the store causing unbounded disk usage.
+  
+  See [Eviction Policy](#eviction-policy) for configuration options.
+</ParamField>
+
+<ParamField path="read_buffer_size" type="number" default="32768">
+  Buffer size to use when reading files in bytes. Generally this should be left to the default value except for testing.
+  
+  Default: 32KB (32768 bytes)
+</ParamField>
+
+<ParamField path="block_size" type="number" default="4096">
+  The block size of the filesystem for the running machine. This value is used to determine an entry's actual size on disk consumed.
+  
+  For example, on a 4KB block size filesystem, a 1-byte file actually consumes 4KB on disk.
+  
+  Default: 4096 bytes (4KB)
+</ParamField>
+
+<ParamField path="max_concurrent_writes" type="number" default="0">
+  Maximum number of concurrent write operations allowed.
+  
+  Each write involves streaming data to a temp file and calling `sync_all()`, which can saturate disk I/O when many writes happen simultaneously. Limiting concurrency prevents disk saturation from blocking the async runtime.
+  
+  A value of `0` means unlimited (no concurrency limit).
+  
+  Default: 0 (unlimited)
+</ParamField>
+
+## Eviction Policy
+
+The eviction policy uses LRU (Least Recently Used) algorithm. Any time an entry is accessed, it updates the timestamp. Inserts and updates execute the eviction policy, removing expired entries and/or the oldest entries until the store size becomes smaller than `max_bytes`.
+
+<ParamField path="eviction_policy.max_bytes" type="number" default="0">
+  Maximum number of bytes before eviction takes place.
+  
+  Default: 0 (never evict based on size)
+</ParamField>
+
+<ParamField path="eviction_policy.evict_bytes" type="number" default="0">
+  When eviction starts based on hitting `max_bytes`, continue until `max_bytes - evict_bytes` is met to create a low watermark. This stops operations from thrashing when the store is close to the limit.
+  
+  Default: 0
+</ParamField>
+
+<ParamField path="eviction_policy.max_seconds" type="number" default="0">
+  Maximum number of seconds for an entry to live since it was last accessed before it is evicted.
+  
+  Default: 0 (never evict based on time)
+</ParamField>
+
+<ParamField path="eviction_policy.max_count" type="number" default="0">
+  Maximum number of entries in the store before eviction takes place.
+  
+  Default: 0 (never evict based on count)
+</ParamField>
+
+## Configuration Examples
+
+### Basic Filesystem Store
+
+```json
+{
+  "filesystem": {
+    "content_path": "/tmp/nativelink/data-worker-test/content_path-cas",
+    "temp_path": "/tmp/nativelink/data-worker-test/tmp_path-cas",
+    "eviction_policy": {
+      "max_bytes": "10gb"
+    }
+  }
+}
+```
+
+### With Shell Expansion
+
+```json
+{
+  "filesystem": {
+    "content_path": "~/.cache/nativelink/content_path-ac",
+    "temp_path": "~/.cache/nativelink/tmp_path-ac",
+    "eviction_policy": {
+      "max_bytes": "500mb"
+    }
+  }
+}
+```
+
+### Advanced Configuration with Concurrency Control
+
+```json
+{
+  "filesystem": {
+    "content_path": "/mnt/ssd/nativelink/content",
+    "temp_path": "/mnt/ssd/nativelink/temp",
+    "eviction_policy": {
+      "max_bytes": "100gb",
+      "evict_bytes": "10gb",
+      "max_seconds": 604800
+    },
+    "max_concurrent_writes": 50,
+    "block_size": 4096
+  }
+}
+```
+
+### With Time-Based Eviction
+
+```json
+{
+  "filesystem": {
+    "content_path": "/var/cache/nativelink/cas",
+    "temp_path": "/var/cache/nativelink/tmp",
+    "eviction_policy": {
+      "max_bytes": "50gb",
+      "max_seconds": 86400
+    }
+  }
+}
+```
+
+## Implementation Details
+
+### File Organization
+
+The filesystem store organizes files into two categories:
+- **Digest-based files**: Stored in the `d/` subdirectory
+- **String-based keys**: Stored in the `s/` subdirectory
+
+### Atomic Operations
+
+Files are first written to `temp_path` and then atomically moved to `content_path`. This ensures that:
+- Partial writes are never visible to readers
+- The temp path must be on the same filesystem/block device as content path
+- Moves are atomic operations without data copying
+
+### Startup Behavior
+
+On startup, the filesystem store:
+1. Scans the `content_path` directory
+2. Adds all valid files to the cache
+3. Deletes files that don't match the expected criteria
+4. Clears all files from `temp_path`
+
+## Best Practices
+
+<Tip>
+  **Use SSDs for better performance**: SSDs provide significantly better random I/O performance compared to HDDs, especially for concurrent operations.
+</Tip>
+
+<Warning>
+  **Always set an eviction policy**: Without an eviction policy, the store will grow unbounded and eventually fill your disk.
+</Warning>
+
+<Tip>
+  **Set `max_concurrent_writes` on HDDs**: If using spinning disks, limit concurrent writes (e.g., 10-20) to prevent I/O saturation.
+</Tip>
+
+<Note>
+  **Ensure temp and content paths are on the same filesystem**: This requirement is critical for atomic move operations to work correctly.
+</Note>

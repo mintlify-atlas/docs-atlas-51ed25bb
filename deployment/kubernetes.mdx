@@ -1,0 +1,589 @@
+---
+title: Kubernetes Deployment
+description: Deploy NativeLink on Kubernetes for production-scale distributed builds
+---
+
+NativeLink provides Kubernetes manifests for scalable production deployments with support for custom workers, telemetry, and GitOps workflows.
+
+## Prerequisites
+
+- Kubernetes 1.24+
+- kubectl configured
+- 8GB+ RAM per node
+- StorageClass for persistent volumes
+- (Optional) Kustomize for configuration management
+
+## Quick Start
+
+<Steps>
+  <Step title="Create namespace">
+    ```bash
+    kubectl create namespace nativelink
+    ```
+  </Step>
+
+  <Step title="Create ConfigMap">
+    Create a ConfigMap with your NativeLink configuration:
+
+    ```bash
+    kubectl create configmap nativelink-config \
+      --from-file=nativelink-config.json5 \
+      -n nativelink
+    ```
+  </Step>
+
+  <Step title="Deploy NativeLink">
+    ```bash
+    kubectl apply -f kubernetes/nativelink/nativelink.yaml -n nativelink
+    ```
+  </Step>
+
+  <Step title="Verify deployment">
+    ```bash
+    kubectl get pods -n nativelink
+    kubectl logs -f deployment/nativelink -n nativelink
+    ```
+  </Step>
+</Steps>
+
+## Core Deployment
+
+### Deployment Manifest
+
+<CodeGroup>
+```yaml nativelink.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: nativelink
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: nativelink
+  template:
+    metadata:
+      labels:
+        app: nativelink
+    spec:
+      containers:
+        - name: nativelink
+          image: trace_machina/nativelink:latest
+          env:
+            - name: RUST_LOG
+              value: info
+            - name: OTEL_EXPORTER_OTLP_ENDPOINT
+              value: http://otel-collector-collector.default.svc:4317
+            - name: OTEL_EXPORTER_OTLP_COMPRESSION
+              value: zstd
+          ports:
+            - containerPort: 9090  # Metrics
+            - containerPort: 50051 # gRPC CAS
+            - containerPort: 50052 # gRPC Scheduler
+            - containerPort: 50061 # Worker API
+          volumeMounts:
+            - name: nativelink-config
+              mountPath: /nativelink-config.json5
+              subPath: nativelink-config.json5
+            - name: tls-volume
+              mountPath: /root
+              readOnly: true
+          args: ["/nativelink-config.json5"]
+          resources:
+            requests:
+              memory: "2Gi"
+              cpu: "1000m"
+            limits:
+              memory: "4Gi"
+              cpu: "2000m"
+      volumes:
+        - name: nativelink-config
+          configMap:
+            name: nativelink-config
+        - name: tls-volume
+          secret:
+            secretName: tls-secret
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: nativelink
+spec:
+  selector:
+    app: nativelink
+  ports:
+    - name: metrics
+      protocol: TCP
+      port: 9090
+      targetPort: 9090
+    - name: grpc
+      protocol: TCP
+      port: 50051
+      targetPort: 50051
+    - name: grpcs
+      protocol: TCP
+      port: 50052
+      targetPort: 50052
+    - name: worker-api
+      protocol: TCP
+      port: 50061
+      targetPort: 50061
+  type: LoadBalancer
+```
+
+```yaml configmap.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: nativelink-config
+data:
+  nativelink-config.json5: |
+    {
+      stores: [
+        {
+          name: "CAS_MAIN_STORE",
+          filesystem: {
+            content_path: "/data/cas/content",
+            temp_path: "/data/cas/tmp",
+            eviction_policy: {
+              max_bytes: 50000000000, // 50GB
+            },
+          },
+        },
+        {
+          name: "AC_MAIN_STORE",
+          filesystem: {
+            content_path: "/data/ac/content",
+            temp_path: "/data/ac/tmp",
+            eviction_policy: {
+              max_bytes: 5000000000, // 5GB
+            },
+          },
+        },
+      ],
+      schedulers: [
+        {
+          name: "MAIN_SCHEDULER",
+          simple: {
+            supported_platform_properties: {
+              cpu_count: "minimum",
+              OSFamily: "priority",
+              "container-image": "priority",
+              ISA: "exact",
+            },
+          },
+        },
+      ],
+      servers: [
+        {
+          listener: {
+            http: {
+              socket_address: "0.0.0.0:50051",
+            },
+          },
+          services: {
+            cas: [{ instance_name: "main", cas_store: "CAS_MAIN_STORE" }],
+            ac: [{ instance_name: "main", ac_store: "AC_MAIN_STORE" }],
+            execution: [
+              {
+                instance_name: "main",
+                cas_store: "CAS_MAIN_STORE",
+                scheduler: "MAIN_SCHEDULER",
+              },
+            ],
+            capabilities: [
+              {
+                instance_name: "main",
+                remote_execution: { scheduler: "MAIN_SCHEDULER" },
+              },
+            ],
+            bytestream: { cas_stores: { main: "CAS_MAIN_STORE" } },
+          },
+        },
+        {
+          listener: {
+            http: {
+              socket_address: "0.0.0.0:50061",
+            },
+          },
+          services: {
+            worker_api: { scheduler: "MAIN_SCHEDULER" },
+            health: {},
+          },
+        },
+      ],
+    }
+```
+</CodeGroup>
+
+## Worker Deployment
+
+Deploy dedicated workers that connect to the scheduler:
+
+<CodeGroup>
+```yaml worker.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: nativelink-worker
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: nativelink-worker
+  template:
+    metadata:
+      labels:
+        app: nativelink-worker
+    spec:
+      containers:
+        - name: worker
+          image: trace_machina/nativelink:latest
+          env:
+            - name: RUST_LOG
+              value: info
+            - name: SCHEDULER_ENDPOINT
+              value: nativelink.default.svc.cluster.local
+          volumeMounts:
+            - name: worker-config
+              mountPath: /worker.json5
+              subPath: worker.json5
+            - name: cas-storage
+              mountPath: /data/cas
+            - name: work-dir
+              mountPath: /tmp/work
+          args: ["/worker.json5"]
+          resources:
+            requests:
+              memory: "4Gi"
+              cpu: "2000m"
+            limits:
+              memory: "8Gi"
+              cpu: "4000m"
+      volumes:
+        - name: worker-config
+          configMap:
+            name: worker-config
+        - name: cas-storage
+          persistentVolumeClaim:
+            claimName: cas-storage-pvc
+        - name: work-dir
+          emptyDir: {}
+```
+
+```yaml worker-config.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: worker-config
+data:
+  worker.json5: |
+    {
+      stores: [
+        {
+          name: "GRPC_CAS_STORE",
+          grpc: {
+            instance_name: "main",
+            endpoints: [
+              { address: "grpc://nativelink.default.svc.cluster.local:50051" },
+            ],
+            store_type: "cas",
+          },
+        },
+        {
+          name: "WORKER_FAST_SLOW_STORE",
+          fast_slow: {
+            fast: {
+              filesystem: {
+                content_path: "/data/cas/content",
+                temp_path: "/data/cas/tmp",
+                eviction_policy: { max_bytes: 10000000000 },
+              },
+            },
+            fast_direction: "get",
+            slow: { ref_store: { name: "GRPC_CAS_STORE" } },
+          },
+        },
+      ],
+      workers: [
+        {
+          local: {
+            worker_api_endpoint: {
+              uri: "grpc://nativelink.default.svc.cluster.local:50061",
+            },
+            cas_fast_slow_store: "WORKER_FAST_SLOW_STORE",
+            work_directory: "/tmp/work",
+            platform_properties: {
+              cpu_count: { query_cmd: "nproc" },
+              OSFamily: { values: ["linux"] },
+              ISA: { values: ["x86-64"] },
+            },
+          },
+        },
+      ],
+    }
+```
+</CodeGroup>
+
+## Persistent Storage
+
+<Warning>
+  Use shared storage (NFS, S3, GCS) for multi-worker setups to ensure all workers can access the same CAS data.
+</Warning>
+
+### PersistentVolumeClaim
+
+```yaml pvc.yaml
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: cas-storage-pvc
+spec:
+  accessModes:
+    - ReadWriteMany  # Required for multi-worker
+  resources:
+    requests:
+      storage: 100Gi
+  storageClassName: nfs-client  # Use your storage class
+```
+
+### S3 Backend
+
+For cloud deployments, use S3-compatible storage:
+
+```json5
+stores: [
+  {
+    name: "CAS_S3_STORE",
+    experimental_cloud_object_store: {
+      provider: "aws",
+      region: "us-east-1",
+      bucket: "nativelink-cas",
+      key_prefix: "cas/",
+      retry: {
+        max_retries: 6,
+        delay: 0.3,
+        jitter: 0.5,
+      },
+    },
+  },
+]
+```
+
+## Kustomize Setup
+
+Use Kustomize for environment-specific configurations:
+
+```yaml kustomization.yaml
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: nativelink
+
+resources:
+  - nativelink.yaml
+  - worker.yaml
+  - pvc.yaml
+
+configMapGenerator:
+  - name: nativelink-config
+    files:
+      - configs/nativelink-config.json5
+  - name: worker-config
+    files:
+      - configs/worker.json5
+
+images:
+  - name: nativelink
+    newName: trace_machina/nativelink
+    newTag: v0.5.0  # Pin to specific version
+```
+
+Deploy with:
+
+```bash
+kubectl apply -k .
+```
+
+## Autoscaling
+
+### Horizontal Pod Autoscaler
+
+Scale workers based on CPU/memory:
+
+```yaml hpa.yaml
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: nativelink-worker-hpa
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: nativelink-worker
+  minReplicas: 2
+  maxReplicas: 10
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 70
+    - type: Resource
+      resource:
+        name: memory
+        target:
+          type: Utilization
+          averageUtilization: 80
+```
+
+### KEDA for Job-Based Scaling
+
+Scale based on queue length using KEDA:
+
+```yaml scaledobject.yaml
+apiVersion: keda.sh/v1alpha1
+kind: ScaledObject
+metadata:
+  name: nativelink-worker-scaler
+spec:
+  scaleTargetRef:
+    name: nativelink-worker
+  minReplicaCount: 1
+  maxReplicaCount: 20
+  triggers:
+    - type: prometheus
+      metadata:
+        serverAddress: http://prometheus.monitoring.svc:9090
+        metricName: nativelink_queue_length
+        query: sum(nativelink_scheduler_queue_length)
+        threshold: '10'
+```
+
+## Health Checks
+
+Add liveness and readiness probes:
+
+```yaml
+livenessProbe:
+  httpGet:
+    path: /status
+    port: 50061
+  initialDelaySeconds: 30
+  periodSeconds: 10
+  timeoutSeconds: 5
+  failureThreshold: 3
+
+readinessProbe:
+  httpGet:
+    path: /status
+    port: 50061
+  initialDelaySeconds: 10
+  periodSeconds: 5
+  timeoutSeconds: 3
+  failureThreshold: 3
+```
+
+## Monitoring
+
+### Prometheus ServiceMonitor
+
+```yaml servicemonitor.yaml
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: nativelink
+spec:
+  selector:
+    matchLabels:
+      app: nativelink
+  endpoints:
+    - port: metrics
+      interval: 30s
+      path: /metrics
+```
+
+### OpenTelemetry Collector
+
+Deploy OpenTelemetry Collector for traces:
+
+```bash
+kubectl apply -f https://github.com/open-telemetry/opentelemetry-operator/releases/latest/download/opentelemetry-operator.yaml
+```
+
+See [Production Deployment](/deployment/production#monitoring-setup) for complete monitoring setup.
+
+## Ingress
+
+Expose NativeLink via Ingress:
+
+```yaml ingress.yaml
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: nativelink
+  annotations:
+    nginx.ingress.kubernetes.io/backend-protocol: "GRPC"
+spec:
+  ingressClassName: nginx
+  rules:
+    - host: nativelink.example.com
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: nativelink
+                port:
+                  number: 50051
+  tls:
+    - hosts:
+        - nativelink.example.com
+      secretName: nativelink-tls
+```
+
+## Troubleshooting
+
+### Pod Not Starting
+
+```bash
+# Check pod status
+kubectl describe pod <pod-name> -n nativelink
+
+# View logs
+kubectl logs <pod-name> -n nativelink --previous
+
+# Check events
+kubectl get events -n nativelink --sort-by='.lastTimestamp'
+```
+
+### Storage Issues
+
+```bash
+# Check PVC status
+kubectl get pvc -n nativelink
+
+# Describe PVC
+kubectl describe pvc cas-storage-pvc -n nativelink
+
+# Check storage class
+kubectl get storageclass
+```
+
+### Worker Connection Issues
+
+```bash
+# Test network connectivity
+kubectl run -it --rm debug --image=busybox --restart=Never -- \
+  wget -O- http://nativelink.default.svc.cluster.local:50061/status
+
+# Check DNS resolution
+kubectl run -it --rm debug --image=busybox --restart=Never -- \
+  nslookup nativelink.default.svc.cluster.local
+```
+
+<Note>
+  For GitOps deployments with Flux, see the [kubernetes/resources/flux](https://github.com/TraceMachina/nativelink/tree/main/kubernetes/resources/flux) directory in the NativeLink repository.
+</Note>

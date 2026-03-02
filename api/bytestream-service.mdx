@@ -1,0 +1,233 @@
+---
+title: ByteStream service
+description: Stream large blobs for upload and download
+---
+
+The ByteStream service provides streaming APIs for transferring large blobs, complementing the batch operations in the CAS service.
+
+## Overview
+
+ByteStream enables:
+- Streaming uploads of large files
+- Resumable downloads
+- Efficient data transfer for blobs too large for batch operations
+
+**Key features:**
+- Chunked streaming (no size limits)
+- Resumable uploads
+- Read offsets and limits
+
+## Configuration
+
+<ParamField path="instance_name" type="string" required>
+  The instance name identifying this ByteStream endpoint
+</ParamField>
+
+<ParamField path="cas_stores" type="object" required>
+  Map of instance names to CAS store references
+</ParamField>
+
+```json5
+{
+  services: {
+    bytestream: {
+      cas_stores: {
+        "main": "MAIN_CAS_STORE"
+      }
+    }
+  }
+}
+```
+
+## gRPC Methods
+
+### Read
+
+Download a blob in chunks.
+
+**Request:**
+
+<ParamField path="resource_name" type="string" required>
+  Format: `{instance_name}/blobs/{hash}/{size}`
+  
+  Example: `main/blobs/abc123.../1048576`
+</ParamField>
+
+<ParamField path="read_offset" type="int64" default={0}>
+  Byte offset to start reading from
+</ParamField>
+
+<ParamField path="read_limit" type="int64" default={0}>
+  Maximum bytes to read (0 = all remaining)
+</ParamField>
+
+**Response (stream):**
+
+<ResponseField name="data" type="bytes">
+  Chunk of blob data
+</ResponseField>
+
+**Example with grpcurl:**
+
+```bash
+grpcurl -plaintext \
+  -d '{
+    "resource_name": "main/blobs/abc123.../1048576",
+    "read_offset": 0,
+    "read_limit": 0
+  }' \
+  localhost:50051 google.bytestream.ByteStream/Read
+```
+
+<Tip>Use `read_offset` to implement resumable downloads after connection failures</Tip>
+
+### Write
+
+Upload a blob in chunks.
+
+**Request (stream):**
+
+<ParamField path="resource_name" type="string" required>
+  Format: `{instance_name}/uploads/{uuid}/blobs/{hash}/{size}`
+  
+  The UUID must be client-generated and unique per upload.
+</ParamField>
+
+<ParamField path="write_offset" type="int64" required>
+  Byte offset of this chunk (must be sequential)
+</ParamField>
+
+<ParamField path="finish_write" type="boolean" required>
+  True on the final chunk
+</ParamField>
+
+<ParamField path="data" type="bytes" required>
+  Chunk data
+</ParamField>
+
+**Response:**
+
+<ResponseField name="committed_size" type="int64">
+  Total bytes successfully written
+</ResponseField>
+
+**Upload flow:**
+
+<Steps>
+  <Step title="Generate UUID">
+    Create a unique UUID for this upload session
+  </Step>
+  
+  <Step title="Send chunks">
+    Stream chunks with sequential `write_offset` values
+  </Step>
+  
+  <Step title="Finish upload">
+    Set `finish_write=true` on the last chunk
+  </Step>
+</Steps>
+
+**Example (first chunk):**
+
+```json
+{
+  "resource_name": "main/uploads/550e8400-e29b-41d4-a716-446655440000/blobs/abc123.../1048576",
+  "write_offset": 0,
+  "finish_write": false,
+  "data": "<base64 encoded chunk>"
+}
+```
+
+**Example (last chunk):**
+
+```json
+{
+  "resource_name": "main/uploads/550e8400-e29b-41d4-a716-446655440000/blobs/abc123.../1048576",
+  "write_offset": 1048000,
+  "finish_write": true,
+  "data": "<base64 encoded chunk>"
+}
+```
+
+<Warning>If the final digest doesn't match the hash in the resource name, the upload fails</Warning>
+
+### QueryWriteStatus
+
+Check the status of an incomplete upload.
+
+**Request:**
+
+<ParamField path="resource_name" type="string" required>
+  The upload resource name
+</ParamField>
+
+**Response:**
+
+<ResponseField name="committed_size" type="int64">
+  Bytes successfully written so far
+</ResponseField>
+
+<ResponseField name="complete" type="boolean">
+  True if upload is finished
+</ResponseField>
+
+<Tip>Use QueryWriteStatus to resume interrupted uploads from the last committed offset</Tip>
+
+## Resource Name Format
+
+ByteStream uses specific resource name formats:
+
+**Read:**
+```
+{instance_name}/blobs/{hash}/{size}
+```
+
+**Write:**
+```
+{instance_name}/uploads/{uuid}/blobs/{hash}/{size}
+```
+
+**Compressed read:**
+```
+{instance_name}/compressed-blobs/{compressor}/{uncompressed_hash}/{uncompressed_size}
+```
+
+## Compression Support
+
+ByteStream supports compressed transfers:
+
+**Compressor values:**
+- `identity` - No compression
+- `zstd` - Zstandard compression
+- `deflate` - DEFLATE compression
+
+Example compressed read:
+```
+main/compressed-blobs/zstd/abc123.../1048576
+```
+
+## Chunk Size Recommendations
+
+<Note>
+Recommended chunk sizes:
+- **Small files** (&lt;1MB): Use BatchUpdateBlobs instead
+- **Medium files** (1-100MB): 256KB - 1MB chunks
+- **Large files** (>100MB): 1-4MB chunks
+</Note>
+
+## Error Codes
+
+| Code | Description |
+|------|-------------|
+| `NOT_FOUND` | Blob or upload session not found |
+| `INVALID_ARGUMENT` | Invalid resource name or offset |
+| `OUT_OF_RANGE` | Read offset beyond blob size |
+| `FAILED_PRECONDITION` | Non-sequential write offset |
+| `RESOURCE_EXHAUSTED` | Disk full |
+| `DATA_LOSS` | Hash mismatch on completed upload |
+
+## Implementation Details
+
+From `nativelink-service/src/bytestream_server.rs`, the ByteStream server wraps the underlying CAS stores and handles chunked streaming.
+
+<Info>The ByteStream service follows the [Google ByteStream API specification](https://github.com/googleapis/googleapis/blob/master/google/bytestream/bytestream.proto)</Info>

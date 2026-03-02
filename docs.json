@@ -1,122 +1,154 @@
 {
   "$schema": "https://mintlify.com/docs.json",
-  "theme": "mint",
-  "name": "Mint Starter Kit",
+  "name": "NativeLink",
+  "theme": "aspen",
   "colors": {
-    "primary": "#16A34A",
-    "light": "#07C983",
-    "dark": "#15803D"
+    "primary": "#8A2BE2"
   },
-  "favicon": "/favicon.svg",
+  "navbar": {
+    "primary": {
+      "type": "github",
+      "href": "https://github.com/TraceMachina/nativelink"
+    }
+  },
+  "footer": {
+    "socials": {
+      "github": "https://github.com/TraceMachina/nativelink"
+    }
+  },
   "navigation": {
     "tabs": [
       {
-        "tab": "Guides",
+        "tab": "Documentation",
         "groups": [
           {
-            "group": "Getting started",
+            "group": "Getting Started",
             "pages": [
-              "index",
+              "introduction",
               "quickstart",
-              "development"
+              "installation"
             ]
           },
           {
-            "group": "Customization",
+            "group": "Core Concepts",
             "pages": [
-              "essentials/settings",
-              "essentials/navigation"
+              "concepts/architecture",
+              "concepts/build-cache",
+              "concepts/remote-execution",
+              "concepts/stores",
+              "concepts/schedulers",
+              "concepts/workers"
             ]
           },
           {
-            "group": "Writing content",
+            "group": "Deployment",
             "pages": [
-              "essentials/markdown",
-              "essentials/code",
-              "essentials/images",
-              "essentials/reusable-snippets"
+              "deployment/docker",
+              "deployment/kubernetes",
+              "deployment/configuration",
+              "deployment/production"
             ]
           },
           {
-            "group": "AI tools",
+            "group": "Integration",
             "pages": [
-              "ai-tools/cursor",
-              "ai-tools/claude-code",
-              "ai-tools/windsurf"
+              "integration/bazel",
+              "integration/buck2",
+              "integration/reclient",
+              "integration/other-tools"
+            ]
+          },
+          {
+            "group": "Operations",
+            "pages": [
+              "operations/monitoring",
+              "operations/metrics",
+              "operations/troubleshooting",
+              "operations/performance-tuning"
+            ]
+          },
+          {
+            "group": "Security",
+            "pages": [
+              "security/authentication",
+              "security/tls",
+              "security/best-practices"
             ]
           }
         ]
       },
       {
-        "tab": "API reference",
+        "tab": "Configuration",
         "groups": [
           {
-            "group": "API documentation",
+            "group": "Configuration Reference",
             "pages": [
-              "api-reference/introduction"
+              "config/overview",
+              "config/stores",
+              "config/schedulers",
+              "config/servers",
+              "config/workers"
             ]
           },
           {
-            "group": "Endpoint examples",
+            "group": "Examples",
             "pages": [
-              "api-reference/endpoint/get",
-              "api-reference/endpoint/create",
-              "api-reference/endpoint/delete",
-              "api-reference/endpoint/webhook"
+              "config/examples/basic-cas",
+              "config/examples/s3-backend",
+              "config/examples/kubernetes",
+              "config/examples/multi-worker"
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "API Reference",
+        "groups": [
+          {
+            "group": "Services",
+            "pages": [
+              "api/cas-service",
+              "api/ac-service",
+              "api/execution-service",
+              "api/bytestream-service",
+              "api/capabilities-service"
+            ]
+          },
+          {
+            "group": "Store Types",
+            "pages": [
+              "api/stores/filesystem",
+              "api/stores/memory",
+              "api/stores/s3",
+              "api/stores/fast-slow",
+              "api/stores/redis"
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "Contributing",
+        "groups": [
+          {
+            "group": "Development",
+            "pages": [
+              "contributing/overview",
+              "contributing/building-from-source",
+              "contributing/bazel",
+              "contributing/cargo",
+              "contributing/nix"
+            ]
+          },
+          {
+            "group": "Community",
+            "pages": [
+              "contributing/guidelines",
+              "contributing/code-of-conduct",
+              "contributing/support"
             ]
           }
         ]
       }
-    ],
-    "global": {
-      "anchors": [
-        {
-          "anchor": "Documentation",
-          "href": "https://mintlify.com/docs",
-          "icon": "book-open-cover"
-        },
-        {
-          "anchor": "Blog",
-          "href": "https://mintlify.com/blog",
-          "icon": "newspaper"
-        }
-      ]
-    }
-  },
-  "logo": {
-    "light": "/logo/light.svg",
-    "dark": "/logo/dark.svg"
-  },
-  "navbar": {
-    "links": [
-      {
-        "label": "Support",
-        "href": "mailto:hi@mintlify.com"
-      }
-    ],
-    "primary": {
-      "type": "button",
-      "label": "Dashboard",
-      "href": "https://dashboard.mintlify.com"
-    }
-  },
-  "contextual": {
-    "options": [
-     "copy",
-     "view",
-     "chatgpt",
-     "claude",
-     "perplexity",
-     "mcp",
-     "cursor",
-     "vscode"
-   ]
-  },
-  "footer": {
-    "socials": {
-      "x": "https://x.com/mintlify",
-      "github": "https://github.com/mintlify",
-      "linkedin": "https://linkedin.com/company/mintlify"
-    }
+    ]
   }
 }

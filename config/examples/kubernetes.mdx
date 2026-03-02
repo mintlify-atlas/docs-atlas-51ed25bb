@@ -1,0 +1,594 @@
+---
+title: Kubernetes Configuration
+description: Production-ready NativeLink deployment on Kubernetes with persistence, TLS, and high availability
+---
+
+This example demonstrates a production-ready NativeLink configuration for Kubernetes deployments. It includes persistence via PersistentVolumes, TLS encryption, and optimized caching strategies.
+
+## Complete Configuration
+
+```json5
+{
+  stores: [
+    {
+      name: "CAS_MAIN_STORE",
+      existence_cache: {
+        backend: {
+          verify: {
+            verify_size: true,
+            verify_hash: true,
+            backend: {
+              fast_slow: {
+                fast: {
+                  size_partitioning: {
+                    size: "64kb",
+                    lower_store: {
+                      memory: {
+                        eviction_policy: {
+                          max_bytes: "1gb",
+                          max_count: 100000,
+                        },
+                      },
+                    },
+                    upper_store: {
+                      noop: {},
+                    },
+                  },
+                },
+                slow: {
+                  compression: {
+                    compression_algorithm: {
+                      lz4: {},
+                    },
+                    backend: {
+                      filesystem: {
+                        content_path: "/tmp/nativelink/data/content_path-cas",
+                        temp_path: "/tmp/nativelink/data/tmp_path-cas",
+                        eviction_policy: {
+                          max_bytes: "10Gb",
+                        },
+                      },
+                    },
+                  },
+                },
+              },
+            },
+          },
+        },
+      },
+    },
+    {
+      name: "AC_MAIN_STORE",
+      completeness_checking: {
+        backend: {
+          fast_slow: {
+            fast: {
+              size_partitioning: {
+                size: "1kb",
+                lower_store: {
+                  memory: {
+                    eviction_policy: {
+                      max_bytes: "100mb",
+                      max_count: 150000,
+                    },
+                  },
+                },
+                upper_store: {
+                  noop: {},
+                },
+              },
+            },
+            slow: {
+              filesystem: {
+                content_path: "/tmp/nativelink/data/content_path-ac",
+                temp_path: "/tmp/nativelink/data/tmp_path-ac",
+                eviction_policy: {
+                  max_bytes: "1gb",
+                },
+              },
+            },
+          },
+        },
+        cas_store: {
+          ref_store: {
+            name: "CAS_MAIN_STORE",
+          },
+        },
+      },
+    },
+  ],
+  schedulers: [
+    {
+      name: "MAIN_SCHEDULER",
+      simple: {
+        supported_platform_properties: {
+          cpu_count: "priority",
+          memory_kb: "priority",
+          network_kbps: "priority",
+          gpu_count: "priority",
+          gpu_model: "priority",
+          OSFamily: "priority",
+          "container-image": "priority",
+          ISA: "exact",
+        },
+      },
+    },
+  ],
+  servers: [
+    {
+      listener: {
+        http: {
+          socket_address: "0.0.0.0:50051",
+        },
+      },
+      services: {
+        cas: [
+          {
+            cas_store: "CAS_MAIN_STORE",
+          },
+        ],
+        ac: [
+          {
+            ac_store: "AC_MAIN_STORE",
+          },
+        ],
+        capabilities: [
+          {
+            remote_execution: {
+              scheduler: "MAIN_SCHEDULER",
+            },
+          },
+        ],
+        execution: [
+          {
+            cas_store: "CAS_MAIN_STORE",
+            scheduler: "MAIN_SCHEDULER",
+          },
+        ],
+        bytestream: {
+          cas_stores: {
+            "": "CAS_MAIN_STORE",
+          },
+        },
+      },
+    },
+    {
+      listener: {
+        http: {
+          socket_address: "0.0.0.0:50052",
+          tls: {
+            cert_file: "/root/example-do-not-use-in-prod-rootca.crt",
+            key_file: "/root/example-do-not-use-in-prod-key.pem",
+          },
+        },
+      },
+      services: {
+        cas: [
+          {
+            cas_store: "CAS_MAIN_STORE",
+          },
+        ],
+        ac: [
+          {
+            ac_store: "AC_MAIN_STORE",
+          },
+        ],
+        capabilities: [
+          {
+            remote_execution: {
+              scheduler: "MAIN_SCHEDULER",
+            },
+          },
+        ],
+        execution: [
+          {
+            cas_store: "CAS_MAIN_STORE",
+            scheduler: "MAIN_SCHEDULER",
+          },
+        ],
+        bytestream: {
+          cas_stores: {
+            "": "CAS_MAIN_STORE",
+          },
+        },
+      },
+    },
+    {
+      listener: {
+        http: {
+          socket_address: "0.0.0.0:50061",
+        },
+      },
+      services: {
+        worker_api: {
+          scheduler: "MAIN_SCHEDULER",
+        },
+        health: {},
+      },
+    },
+  ],
+}
+```
+
+## Key Features
+
+### Existence Cache
+
+The existence cache wrapper prevents unnecessary lookups for known missing objects:
+
+```json5
+existence_cache: {
+  backend: {
+    verify: {
+      // Underlying store configuration
+    },
+  },
+}
+```
+
+<Note>
+**Performance Impact**: The existence cache maintains a Bloom filter of known object hashes. This significantly reduces negative lookups ("does this object exist?") which are common in distributed builds.
+</Note>
+
+### Size Partitioning
+
+Different storage strategies for small and large objects:
+
+```json5
+size_partitioning: {
+  size: "64kb",
+  lower_store: {
+    memory: {
+      eviction_policy: {
+        max_bytes: "1gb",
+        max_count: 100000,
+      },
+    },
+  },
+  upper_store: {
+    noop: {},  // Large objects go directly to slow store
+  },
+}
+```
+
+**Rationale**:
+- Small objects (&lt;64KB): Kept in memory for fast access (headers, metadata, small source files)
+- Large objects (≥64KB): Skip memory cache, go directly to persistent storage (binaries, archives)
+
+### Completeness Checking
+
+The Action Cache uses completeness checking to ensure all referenced objects exist:
+
+```json5
+completeness_checking: {
+  backend: {
+    // AC store configuration
+  },
+  cas_store: {
+    ref_store: {
+      name: "CAS_MAIN_STORE",
+    },
+  },
+}
+```
+
+<Note>
+Before returning a cache hit, NativeLink verifies that all output files referenced in the cached ActionResult still exist in the CAS. This prevents "cache hit but missing outputs" errors.
+</Note>
+
+### Compression
+
+All objects stored to persistent volumes are compressed:
+
+```json5
+compression: {
+  compression_algorithm: {
+    lz4: {},
+  },
+  backend: {
+    filesystem: {
+      // Storage configuration
+    },
+  },
+}
+```
+
+## Kubernetes Deployment
+
+### ConfigMap for Configuration
+
+```yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: nativelink-config
+  namespace: nativelink
+data:
+  config.json5: |
+    {
+      stores: [
+        // Configuration from above
+      ],
+    }
+```
+
+### StatefulSet with Persistent Storage
+
+```yaml
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: nativelink-cas
+  namespace: nativelink
+spec:
+  serviceName: nativelink-cas
+  replicas: 1
+  selector:
+    matchLabels:
+      app: nativelink-cas
+  template:
+    metadata:
+      labels:
+        app: nativelink-cas
+    spec:
+      containers:
+      - name: nativelink
+        image: ghcr.io/tracemachina/nativelink:latest
+        args: ["/config/config.json5"]
+        ports:
+        - containerPort: 50051
+          name: grpc
+        - containerPort: 50052
+          name: grpc-tls
+        - containerPort: 50061
+          name: worker-api
+        volumeMounts:
+        - name: config
+          mountPath: /config
+        - name: cache-data
+          mountPath: /tmp/nativelink/data
+        - name: tls-certs
+          mountPath: /root
+          readOnly: true
+        resources:
+          requests:
+            memory: "2Gi"
+            cpu: "1000m"
+          limits:
+            memory: "4Gi"
+            cpu: "2000m"
+      volumes:
+      - name: config
+        configMap:
+          name: nativelink-config
+      - name: tls-certs
+        secret:
+          secretName: nativelink-tls
+  volumeClaimTemplates:
+  - metadata:
+      name: cache-data
+    spec:
+      accessModes: ["ReadWriteOnce"]
+      storageClassName: fast-ssd
+      resources:
+        requests:
+          storage: 100Gi
+```
+
+<Note>
+**Why StatefulSet?** StatefulSets provide stable network identities and persistent storage. This is crucial for cache servers where data should persist across pod restarts.
+</Note>
+
+### Service for Client Access
+
+```yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: nativelink-cas
+  namespace: nativelink
+spec:
+  selector:
+    app: nativelink-cas
+  ports:
+  - name: grpc
+    port: 50051
+    targetPort: 50051
+  - name: grpc-tls
+    port: 50052
+    targetPort: 50052
+  type: LoadBalancer
+```
+
+## TLS Configuration
+
+### Generate Certificates
+
+<Note>
+**Production Certificates**: The example uses self-signed certificates for demonstration. In production, use certificates from a trusted CA (Let's Encrypt, cert-manager, etc.).
+</Note>
+
+```bash
+# Generate CA and server certificates
+openssl req -x509 -newkey rsa:4096 -nodes \
+  -keyout server-key.pem \
+  -out server-cert.pem \
+  -days 365 \
+  -subj "/CN=nativelink-cas.default.svc.cluster.local"
+```
+
+### Create Kubernetes Secret
+
+```bash
+kubectl create secret generic nativelink-tls \
+  --from-file=example-do-not-use-in-prod-key.pem=server-key.pem \
+  --from-file=example-do-not-use-in-prod-rootca.crt=server-cert.pem \
+  -n nativelink
+```
+
+### TLS Server Configuration
+
+```json5
+listener: {
+  http: {
+    socket_address: "0.0.0.0:50052",
+    tls: {
+      cert_file: "/root/example-do-not-use-in-prod-rootca.crt",
+      key_file: "/root/example-do-not-use-in-prod-key.pem",
+    },
+  },
+}
+```
+
+## Multi-Server Configuration
+
+Three servers provide different access patterns:
+
+### 1. HTTP Server (Port 50051)
+- Unencrypted internal communication
+- Use for pod-to-pod traffic within cluster
+- Lower latency, no TLS overhead
+
+### 2. HTTPS Server (Port 50052)
+- TLS-encrypted external access
+- Use for clients outside the cluster
+- Secure communication over internet
+
+### 3. Worker API Server (Port 50061)
+- Backend API for worker registration
+- Should be cluster-internal only
+- Includes health check endpoint
+
+<Note>
+**Security Best Practice**: Use NetworkPolicies to restrict port 50061 to worker pods only. Only expose port 50052 (TLS) externally.
+</Note>
+
+## Platform Properties
+
+The scheduler uses "priority" matching for most properties:
+
+```json5
+supported_platform_properties: {
+  cpu_count: "priority",       // Prefer exact match
+  memory_kb: "priority",       // Fall back to available
+  gpu_count: "priority",       // Useful for heterogeneous clusters
+  OSFamily: "priority",        // Linux vs. Windows workers
+  "container-image": "priority", // Specific toolchain images
+  ISA: "exact",                // Must match instruction set
+}
+```
+
+This allows:
+- Heterogeneous worker pools (different CPU/memory configurations)
+- GPU-accelerated builds routed to GPU workers
+- Platform-specific builds (Linux/Windows/macOS)
+
+## Persistent Volume Storage
+
+### Storage Class Selection
+
+Choose appropriate storage for your workload:
+
+<CodeGroup>
+
+```yaml Local SSD (Best Performance)
+storageClassName: fast-ssd
+# Uses locally attached SSDs
+# Lowest latency, highest IOPS
+# Not available on all nodes
+```
+
+```yaml Network SSD (Balanced)
+storageClassName: pd-ssd  # GKE
+# or
+storageClassName: gp3     # EKS
+# Network-attached SSD
+# Good performance, portable across nodes
+```
+
+```yaml Network HDD (Cost-Optimized)
+storageClassName: pd-standard  # GKE
+# or
+storageClassName: gp2         # EKS
+# Lower cost, acceptable for cold cache
+```
+
+</CodeGroup>
+
+### Cache Persistence
+
+When mounted at `/tmp/nativelink/data`, the PersistentVolume preserves:
+- `/tmp/nativelink/data/content_path-cas` - CAS objects
+- `/tmp/nativelink/data/content_path-ac` - Action Cache entries
+- `/tmp/nativelink/data/tmp_path-*` - Temporary files (can be ephemeral)
+
+## Monitoring and Health Checks
+
+### Kubernetes Liveness Probe
+
+```yaml
+livenessProbe:
+  httpGet:
+    path: /status  # Adjust based on health endpoint
+    port: 50061
+  initialDelaySeconds: 10
+  periodSeconds: 10
+```
+
+### Readiness Probe
+
+```yaml
+readinessProbe:
+  httpGet:
+    path: /status
+    port: 50061
+  initialDelaySeconds: 5
+  periodSeconds: 5
+```
+
+### Resource Limits
+
+```yaml
+resources:
+  requests:
+    memory: "2Gi"    # Minimum for 1GB memory cache + overhead
+    cpu: "1000m"     # 1 CPU core baseline
+  limits:
+    memory: "4Gi"    # Allow burst for large transfers
+    cpu: "2000m"     # Cap at 2 cores
+```
+
+<Note>
+Adjust memory limits based on your cache sizes:
+- CAS memory cache: 1GB
+- AC memory cache: 100MB
+- Overhead: ~500MB
+- Total minimum: 1.6GB, recommended: 2-4GB
+</Note>
+
+## Horizontal Scaling
+
+For read scaling, deploy multiple replicas:
+
+```yaml
+replicas: 3
+```
+
+With a Service load balancer:
+
+```yaml
+type: LoadBalancer
+# or
+type: ClusterIP
+# with Ingress for external access
+```
+
+<Note>
+**Shared Storage Required**: If running multiple replicas, all pods must access the same underlying storage (NFS, S3, etc.). See [S3 Backend](/config/examples/s3-backend) for distributed storage configuration.
+</Note>
+
+## See Also
+
+- [Multi-Worker Setup](/config/examples/multi-worker) - Distributed worker configuration
+- [S3 Backend](/config/examples/s3-backend) - Cloud object storage for multi-replica deployments
+- [Basic CAS Configuration](/config/examples/basic-cas) - Starting point before Kubernetes deployment

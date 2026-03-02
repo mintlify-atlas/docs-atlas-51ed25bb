@@ -1,0 +1,467 @@
+---
+title: "Redis Store"
+description: "Distributed in-memory storage using Redis or Redis-compatible services"
+---
+
+## Overview
+
+The Redis store provides distributed in-memory storage using Redis or Redis-compatible services. It's ideal for sharing cache across multiple NativeLink instances while maintaining high performance. The store supports Redis standalone, cluster, and sentinel modes.
+
+<Tip>
+  Pairs well with `SizePartitioning` and `FastSlow` stores. Ideal for small objects as most Redis services have a max upload size of 256MB-512MB.
+</Tip>
+
+## Use Cases
+
+- **Distributed action cache**: Share build action results across multiple workers
+- **Small object caching**: Cache frequently accessed small objects (< 256MB)
+- **Shared state**: Coordination between NativeLink instances
+- **Fast distributed tier**: Alternative to memory store that survives restarts
+- **Scheduler backend**: Store scheduler state in Redis with pub/sub support
+
+## Performance Characteristics
+
+- **Read performance**: Sub-millisecond for network-local Redis (1-5ms typical)
+- **Write performance**: Sub-millisecond for small objects
+- **Durability**: Configurable (in-memory, RDB snapshots, AOF)
+- **Availability**: High with Redis Sentinel or Cluster
+- **Size limits**: Most Redis services limit objects to 256MB-512MB
+
+## Configuration
+
+<ParamField path="addresses" type="string[]" required>
+  List of Redis server addresses in the format:
+  
+  `redis://[username:password@]host:port[/database_id]`
+  
+  Examples:
+  - `redis://127.0.0.1:6379/` (local, default DB)
+  - `redis://username:password@redis-server:6380/99` (authenticated, DB 99)
+  - `redis://redis-cluster:6379/` (cluster node)
+  
+  For cluster mode, provide multiple cluster node addresses.
+</ParamField>
+
+<ParamField path="mode" type="RedisMode" default="standard">
+  Redis operation mode.
+  
+  Available options:
+  - `"standard"`: Standard Redis (not cluster or sentinel)
+  - `"cluster"`: Redis Cluster mode
+  - `"sentinel"`: Redis Sentinel mode
+  
+  Default: `"standard"`
+</ParamField>
+
+<ParamField path="key_prefix" type="string" default="">
+  Optional prefix to prepend to all keys in this store.
+  
+  Useful for:
+  - Organizing data by namespace
+  - Multi-tenant configurations
+  - Separating environments (dev, staging, prod)
+  
+  Example: `"nativelink:cas:"`
+  
+  Default: `""` (no prefix)
+</ParamField>
+
+<ParamField path="read_chunk_size" type="number" default="65536">
+  The amount of data to read from Redis at a time (in bytes).
+  
+  Used to limit memory usage when reading large objects and prevent `command_timeout_ms` from being triggered on slow connections.
+  
+  **Important**: If this value is too high, the `command_timeout_ms` might be triggered if latency or throughput to Redis is too low.
+  
+  Default: 64KB (65536 bytes)
+</ParamField>
+
+<ParamField path="connection_pool_size" type="number" default="3">
+  The number of connections to keep open to the Redis server(s).
+  
+  More connections can improve throughput but increase resource usage.
+  
+  Default: 3
+</ParamField>
+
+<ParamField path="max_chunk_uploads_per_update" type="number" default="10">
+  The maximum number of upload chunks to allow per update.
+  
+  Used to limit memory usage when uploading large objects. A good rule of thumb:
+  
+  `AVAIL_MEMORY / (read_chunk_size * max_chunk_uploads_per_update) ≈ THEORETICAL_MAX_CONCURRENT_UPLOADS`
+  
+  Divide `AVAIL_MEMORY` by ~10 to account for other memory usage.
+  
+  Default: 10
+</ParamField>
+
+<ParamField path="command_timeout_ms" type="number" default="10000">
+  Time in milliseconds until the Redis store considers a command timed out.
+  
+  This triggers a retry and potentially a reconnection to the Redis server.
+  
+  Default: 10000ms (10 seconds)
+</ParamField>
+
+<ParamField path="connection_timeout_ms" type="number" default="3000">
+  Time in milliseconds until the Redis store considers the connection unresponsive.
+  
+  This triggers a reconnection to the Redis server.
+  
+  Default: 3000ms (3 seconds)
+</ParamField>
+
+<ParamField path="max_client_permits" type="number" default="500">
+  Maximum number of permitted actions to the Redis store at any one time.
+  
+  Prevents timeout issues from too many inflight actions.
+  
+  Default: 500
+</ParamField>
+
+<ParamField path="scan_count" type="number" default="10000">
+  The COUNT value passed when scanning keys in Redis.
+  
+  Used to hint the amount of work per response when scanning large keyspaces.
+  
+  Default: 10000
+</ParamField>
+
+<ParamField path="max_count_per_cursor" type="number" default="1500">
+  Maximum number of items returned per cursor for search indexes.
+  
+  May reduce thundering herd issues with worker provisioner at higher node counts.
+  
+  Default: 1500
+</ParamField>
+
+<ParamField path="retry" type="Retry">
+  Retry configuration for failed Redis operations.
+  
+  Default configuration:
+  ```json
+  {
+    "max_retries": 0,
+    "delay": 0.1,
+    "jitter": 0.5
+  }
+  ```
+  
+  See [Retry Configuration](#retry-configuration) for details.
+</ParamField>
+
+<ParamField path="experimental_pub_sub_channel" type="string">
+  Optional Redis channel to publish write events to.
+  
+  If set, every write operation publishes an event to this channel. If unset, writes still occur but events aren't published.
+  
+  **Experimental feature.**
+  
+  Default: Not set (no events published)
+</ParamField>
+
+## Deprecated Configuration
+
+<Warning>
+  The following fields are deprecated. Use the new timeout fields instead.
+</Warning>
+
+<ParamField path="response_timeout_s" type="number" deprecated>
+  **Deprecated**: Use `command_timeout_ms` instead.
+  
+  The response timeout for Redis connections in seconds.
+</ParamField>
+
+<ParamField path="connection_timeout_s" type="number" deprecated>
+  **Deprecated**: Use `connection_timeout_ms` instead.
+  
+  The connection timeout for Redis connections in seconds.
+</ParamField>
+
+<ParamField path="broadcast_channel_capacity" type="number" deprecated>
+  **Deprecated**: No longer used by redis-rs.
+</ParamField>
+
+## Retry Configuration
+
+<ParamField path="retry.max_retries" type="number" default="0">
+  Maximum number of retries. Setting to 0 means unlimited retries.
+  
+  Default: 0 (unlimited)
+</ParamField>
+
+<ParamField path="retry.delay" type="number" default="0.1">
+  Base delay in seconds for exponential backoff.
+  
+  Default: 0.1 (100ms)
+</ParamField>
+
+<ParamField path="retry.jitter" type="number" default="0.5">
+  Jitter as a percentage (0.0 to 1.0) to add to delays.
+  
+  Default: 0.5 (50%)
+</ParamField>
+
+## Redis Mode Configuration
+
+### Standard Mode
+
+Single Redis instance or simple replication.
+
+```json
+{
+  "redis_store": {
+    "addresses": ["redis://127.0.0.1:6379/"],
+    "mode": "standard",
+    "max_client_permits": 1000
+  }
+}
+```
+
+### Cluster Mode
+
+Redis Cluster for horizontal scaling and automatic sharding.
+
+```json
+{
+  "redis_store": {
+    "addresses": [
+      "redis://node1:6379/",
+      "redis://node2:6379/",
+      "redis://node3:6379/"
+    ],
+    "mode": "cluster",
+    "max_client_permits": 1000
+  }
+}
+```
+
+### Sentinel Mode
+
+Redis Sentinel for high availability and automatic failover.
+
+```json
+{
+  "redis_store": {
+    "addresses": [
+      "redis://sentinel1:26379/",
+      "redis://sentinel2:26379/",
+      "redis://sentinel3:26379/"
+    ],
+    "mode": "sentinel",
+    "max_client_permits": 1000
+  }
+}
+```
+
+## Configuration Examples
+
+### Basic Redis Store
+
+```json
+{
+  "redis_store": {
+    "addresses": ["redis://127.0.0.1:6379/"],
+    "max_client_permits": 1000
+  }
+}
+```
+
+### With Authentication and Custom Database
+
+```json
+{
+  "redis_store": {
+    "addresses": ["redis://username:password@redis-server:6380/99"],
+    "key_prefix": "nativelink:prod:",
+    "max_client_permits": 1000
+  }
+}
+```
+
+### Optimized for Large Objects
+
+```json
+{
+  "redis_store": {
+    "addresses": ["redis://redis-server:6379/"],
+    "read_chunk_size": 131072,
+    "max_chunk_uploads_per_update": 20,
+    "command_timeout_ms": 30000,
+    "max_client_permits": 1000
+  }
+}
+```
+
+### Size-Partitioned with Redis for Small Objects
+
+```json
+{
+  "size_partitioning": {
+    "size": "128mib",
+    "lower_store": {
+      "redis_store": {
+        "addresses": ["redis://redis-server:6379/"],
+        "key_prefix": "small:",
+        "max_client_permits": 1000
+      }
+    },
+    "upper_store": {
+      "experimental_cloud_object_store": {
+        "provider": "aws",
+        "region": "us-west-2",
+        "bucket": "large-objects"
+      }
+    }
+  }
+}
+```
+
+### Redis as Fast Tier with S3 Slow Tier
+
+```json
+{
+  "fast_slow": {
+    "fast": {
+      "redis_store": {
+        "addresses": ["redis://redis-cluster:6379/"],
+        "mode": "cluster",
+        "key_prefix": "cache:",
+        "max_client_permits": 1000
+      }
+    },
+    "slow": {
+      "experimental_cloud_object_store": {
+        "provider": "aws",
+        "region": "us-east-1",
+        "bucket": "build-cache"
+      }
+    }
+  }
+}
+```
+
+### With Pub/Sub for Distributed Notifications
+
+```json
+{
+  "redis_store": {
+    "addresses": ["redis://redis-server:6379/"],
+    "experimental_pub_sub_channel": "nativelink:updates",
+    "max_client_permits": 1000
+  }
+}
+```
+
+### Production Configuration with Tuning
+
+```json
+{
+  "redis_store": {
+    "addresses": [
+      "redis://redis-cluster-node1:6379/",
+      "redis://redis-cluster-node2:6379/",
+      "redis://redis-cluster-node3:6379/"
+    ],
+    "mode": "cluster",
+    "key_prefix": "nativelink:prod:ac:",
+    "read_chunk_size": 65536,
+    "connection_pool_size": 5,
+    "max_chunk_uploads_per_update": 10,
+    "command_timeout_ms": 10000,
+    "connection_timeout_ms": 3000,
+    "max_client_permits": 1000,
+    "scan_count": 10000,
+    "retry": {
+      "max_retries": 0,
+      "delay": 0.1,
+      "jitter": 0.5
+    }
+  }
+}
+```
+
+## Size Limitations
+
+<Warning>
+  **Redis object size limits**: Most Redis services limit individual values to 256MB-512MB. For larger objects, use Redis with `SizePartitioning` or as a fast tier with another store as the slow tier.
+</Warning>
+
+### Recommended Size Limits
+
+| Redis Deployment | Max Object Size | Recommended Use |
+|------------------|-----------------|------------------|
+| Managed Redis (AWS ElastiCache, etc.) | 256MB | Action Cache, small CAS objects |
+| Self-hosted Redis | 512MB | Action Cache, medium CAS objects |
+| Redis with size partitioning | No limit | Combined with S3/filesystem for large objects |
+
+## Best Practices
+
+<Tip>
+  **Use for Action Cache**: Redis excels at storing small action cache entries that are frequently accessed.
+</Tip>
+
+<Tip>
+  **Combine with size partitioning**: Use Redis for objects under 128MB and S3/filesystem for larger objects.
+</Tip>
+
+<Tip>
+  **Use Redis Cluster for scale**: For high-throughput workloads, Redis Cluster provides horizontal scaling.
+</Tip>
+
+<Warning>
+  **Monitor memory usage**: Redis stores all data in memory. Monitor usage and configure appropriate eviction policies on the Redis server.
+</Warning>
+
+<Tip>
+  **Tune connection pool**: Increase `connection_pool_size` for high-concurrency workloads, but balance against Redis connection limits.
+</Tip>
+
+<Note>
+  **Set key_prefix for multi-tenancy**: Use different prefixes for different environments or tenants sharing the same Redis instance.
+</Note>
+
+<Tip>
+  **Configure Redis persistence**: Enable RDB snapshots or AOF on Redis server for data durability across restarts.
+</Tip>
+
+## Performance Tuning
+
+### Network Latency
+
+- **Co-locate with compute**: Place Redis close to NativeLink instances to minimize latency
+- **Use connection pooling**: Increase `connection_pool_size` for better throughput
+- **Tune timeouts**: Adjust `command_timeout_ms` based on network characteristics
+
+### Memory Management
+
+- **Set Redis maxmemory**: Configure Redis `maxmemory` and eviction policy
+- **Use LRU eviction**: Configure Redis with `maxmemory-policy allkeys-lru`
+- **Monitor memory**: Track Redis memory usage and adjust limits
+
+### Throughput Optimization
+
+- **Increase chunk size**: Larger `read_chunk_size` reduces round trips but increases memory
+- **Tune concurrency**: Adjust `max_client_permits` and `max_chunk_uploads_per_update`
+- **Use pipelining**: Redis store automatically pipelines operations
+
+## Common Patterns
+
+### Development Environment
+
+```json
+{"redis_store": {"addresses": ["redis://localhost:6379/"], "max_client_permits": 100}}
+```
+
+### Production Action Cache
+
+```json
+{"redis_store": {"addresses": ["redis://redis-cluster:6379/"], "mode": "cluster", "key_prefix": "ac:", "max_client_permits": 2000}}
+```
+
+### Hybrid Storage
+
+```json
+{"fast_slow": {"fast": {"redis_store": {"addresses": ["redis://redis:6379/"], "max_client_permits": 1000}}, "slow": {"filesystem": {"content_path": "/var/cache/nativelink", "temp_path": "/tmp/nativelink", "eviction_policy": {"max_bytes": "100gb"}}}}}
+```

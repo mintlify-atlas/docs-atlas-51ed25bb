@@ -1,0 +1,698 @@
+---
+title: Security Best Practices
+description: Recommended security practices for deploying and operating NativeLink
+---
+
+This guide covers security best practices for production deployments of NativeLink.
+
+## Network Security
+
+### Separate Worker and Client Traffic
+
+<Warning>
+Never expose the Worker API on the same network endpoint as client-facing services. Workers have elevated privileges and must be isolated.
+</Warning>
+
+Run Worker API on a dedicated, isolated port:
+
+```json5
+{
+  servers: [
+    {
+      name: "public_services",
+      listener: {
+        http: { socket_address: "0.0.0.0:50051" }  // Public services
+      },
+      services: {
+        cas: [{ instance_name: "main", cas_store: "main_cas" }],
+        ac: [{ instance_name: "main", ac_store: "main_ac" }],
+        execution: [{ instance_name: "main", scheduler: "main", cas_store: "main_cas" }]
+      }
+    },
+    {
+      name: "worker_api",
+      listener: {
+        http: { socket_address: "127.0.0.1:50061" }  // Workers only
+      },
+      services: {
+        worker_api: { scheduler: "main" }
+      }
+    }
+  ]
+}
+```
+
+### Use Firewall Rules
+
+Restrict access to worker ports using firewall rules:
+
+```bash
+# Allow client traffic on port 50051
+sudo ufw allow 50051/tcp
+
+# Block external access to Worker API (50061)
+sudo ufw deny 50061/tcp
+
+# Allow Worker API only from specific subnet
+sudo ufw allow from 10.0.0.0/24 to any port 50061 proto tcp
+```
+
+For Kubernetes deployments, use NetworkPolicies:
+
+```yaml
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: worker-api-policy
+spec:
+  podSelector:
+    matchLabels:
+      app: nativelink-scheduler
+  policyTypes:
+  - Ingress
+  ingress:
+  - from:
+    - podSelector:
+        matchLabels:
+          app: nativelink-worker  # Only workers can access
+    ports:
+    - protocol: TCP
+      port: 50061
+```
+
+### Network Segmentation
+
+<Steps>
+  <Step title="Isolate components">
+    Deploy schedulers, CAS servers, and workers in separate network segments or VLANs
+  </Step>
+  <Step title="Use private endpoints">
+    Configure workers to connect to schedulers via private network addresses
+  </Step>
+  <Step title="Limit egress">
+    Restrict worker outbound traffic to only required endpoints (scheduler, CAS)
+  </Step>
+  <Step title="DMZ for public access">
+    Place client-facing services in a DMZ with strict ingress rules
+  </Step>
+</Steps>
+
+## TLS and Encryption
+
+### Always Use TLS in Production
+
+<Warning>
+Never run NativeLink without TLS in production. Unencrypted traffic exposes build artifacts, credentials, and sensitive data.
+</Warning>
+
+Minimum TLS configuration:
+
+```json5
+{
+  servers: [
+    {
+      listener: {
+        http: {
+          socket_address: "0.0.0.0:50051",
+          tls: {
+            cert_file: "/etc/nativelink/certs/server.pem",
+            key_file: "/etc/nativelink/certs/server-key.pem"
+          }
+        }
+      },
+      services: { /* ... */ }
+    }
+  ]
+}
+```
+
+### Certificate Management
+
+**Use Certificates from Trusted CAs**
+
+In production, obtain certificates from:
+- **Let's Encrypt**: Free, automated certificates with 90-day validity
+- **Commercial CAs**: DigiCert, GlobalSign, Sectigo for long-lived certificates
+- **Internal PKI**: Managed certificate infrastructure for private networks
+
+**Automate Certificate Renewal**
+
+```bash
+# Automated renewal with certbot (Let's Encrypt)
+0 0 * * * certbot renew --quiet --deploy-hook "systemctl reload nativelink"
+```
+
+**Certificate Rotation Checklist**
+
+<Steps>
+  <Step title="Monitor expiration">
+    Set up alerts 30 days before certificate expiration
+  </Step>
+  <Step title="Generate new certificates">
+    Obtain new certificates before expiration
+  </Step>
+  <Step title="Test in staging">
+    Deploy new certificates to a staging environment first
+  </Step>
+  <Step title="Rolling update">
+    Update certificates on servers one at a time to avoid downtime
+  </Step>
+  <Step title="Verify">
+    Confirm all clients can connect with the new certificates
+  </Step>
+</Steps>
+
+### Mutual TLS for Worker API
+
+Always require client certificates for worker connections:
+
+```json5
+{
+  listener: {
+    http: {
+      socket_address: "127.0.0.1:50061",
+      tls: {
+        cert_file: "/etc/nativelink/certs/server.pem",
+        key_file: "/etc/nativelink/certs/server-key.pem",
+        client_ca_file: "/etc/nativelink/certs/worker-ca.pem",
+        client_crl_file: "/etc/nativelink/certs/worker-crl.pem"
+      }
+    }
+  },
+  services: {
+    worker_api: { scheduler: "main" }
+  }
+}
+```
+
+<Note>
+Use separate Certificate Authorities (CAs) for workers and general clients to enable independent revocation and access control.
+</Note>
+
+## Access Control
+
+### File System Permissions
+
+Protect configuration files, certificates, and data directories:
+
+```bash
+# Configuration files
+chmod 600 /etc/nativelink/config.json5
+chown nativelink:nativelink /etc/nativelink/config.json5
+
+# Private keys (no group or world access)
+chmod 400 /etc/nativelink/certs/*.key.pem
+chown nativelink:nativelink /etc/nativelink/certs/*.key.pem
+
+# Public certificates (readable by NativeLink)
+chmod 644 /etc/nativelink/certs/*.pem
+chown nativelink:nativelink /etc/nativelink/certs/*.pem
+
+# Data directories (NativeLink only)
+chown -R nativelink:nativelink /var/lib/nativelink
+chmod 750 /var/lib/nativelink
+```
+
+### Run as Non-Root User
+
+Never run NativeLink as root. Create a dedicated user:
+
+```bash
+# Create nativelink user
+sudo useradd -r -s /bin/false -d /var/lib/nativelink nativelink
+
+# Set ownership
+sudo chown -R nativelink:nativelink /var/lib/nativelink /etc/nativelink
+```
+
+Systemd service configuration:
+
+```ini
+[Service]
+User=nativelink
+Group=nativelink
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/nativelink
+```
+
+### Container Security
+
+For Docker/Kubernetes deployments:
+
+```dockerfile
+FROM nativelink:latest
+
+# Run as non-root user
+USER 65532:65532
+
+# Read-only root filesystem
+RUN chmod -R a-w /app
+
+CMD ["nativelink", "/config/nativelink.json5"]
+```
+
+Kubernetes pod security:
+
+```yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  name: nativelink-cas
+spec:
+  securityContext:
+    runAsNonRoot: true
+    runAsUser: 65532
+    fsGroup: 65532
+    seccompProfile:
+      type: RuntimeDefault
+  containers:
+  - name: nativelink
+    image: nativelink:latest
+    securityContext:
+      allowPrivilegeEscalation: false
+      capabilities:
+        drop:
+        - ALL
+      readOnlyRootFilesystem: true
+```
+
+## Secrets Management
+
+### Never Commit Secrets to Version Control
+
+<Warning>
+Do not store private keys, certificates, or sensitive configuration in Git repositories.
+</Warning>
+
+Use `.gitignore` to prevent accidental commits:
+
+```gitignore
+# .gitignore
+*.key
+*.key.pem
+*.p12
+*.pfx
+*.jks
+nativelink-config.json5
+.env
+secrets/
+```
+
+### Use Environment Variables or Secret Stores
+
+Configuration with environment variable expansion:
+
+```json5
+{
+  stores: [
+    {
+      name: "s3_cas",
+      experimental_cloud_object_store: {
+        provider: "aws",
+        region: "${AWS_REGION}",
+        bucket: "${S3_BUCKET_NAME}",
+        // Credentials from AWS environment variables
+        // AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY
+      }
+    }
+  ]
+}
+```
+
+For Kubernetes, use Secrets:
+
+```yaml
+apiVersion: v1
+kind: Secret
+metadata:
+  name: nativelink-certs
+type: kubernetes.io/tls
+data:
+  tls.crt: <base64-encoded-cert>
+  tls.key: <base64-encoded-key>
+  ca.crt: <base64-encoded-ca>
+---
+apiVersion: v1
+kind: Pod
+spec:
+  volumes:
+  - name: certs
+    secret:
+      secretName: nativelink-certs
+  containers:
+  - name: nativelink
+    volumeMounts:
+    - name: certs
+      mountPath: /etc/nativelink/certs
+      readOnly: true
+```
+
+For HashiCorp Vault or other secret managers:
+
+```bash
+# Fetch secrets at runtime
+export TLS_CERT=$(vault kv get -field=cert secret/nativelink/tls)
+export TLS_KEY=$(vault kv get -field=key secret/nativelink/tls)
+
+# Start NativeLink with environment variable substitution
+nativelink /etc/nativelink/config.json5
+```
+
+## Data Security
+
+### Encrypt Data at Rest
+
+Use encrypted storage volumes for CAS and AC data:
+
+**Linux (LUKS)**
+
+```bash
+# Create encrypted volume
+sudo cryptsetup luksFormat /dev/sdb
+sudo cryptsetup open /dev/sdb nativelink-data
+sudo mkfs.ext4 /dev/mapper/nativelink-data
+sudo mount /dev/mapper/nativelink-data /var/lib/nativelink
+```
+
+**Cloud Providers**
+
+- **AWS**: Use encrypted EBS volumes (enable encryption in volume settings)
+- **GCP**: Use encrypted persistent disks (encrypted by default)
+- **Azure**: Use encrypted managed disks (enable encryption at host)
+
+### Cloud Storage Encryption
+
+For S3/GCS backends, enable server-side encryption:
+
+**AWS S3**
+
+```bash
+# Enable default encryption on bucket
+aws s3api put-bucket-encryption \
+  --bucket nativelink-cas \
+  --server-side-encryption-configuration '{
+    "Rules": [{
+      "ApplyServerSideEncryptionByDefault": {
+        "SSEAlgorithm": "AES256"
+      }
+    }]
+  }'
+```
+
+**Google Cloud Storage**
+
+```bash
+# Enable encryption with Cloud KMS
+gcloud storage buckets create gs://nativelink-cas \
+  --default-encryption-key projects/PROJECT_ID/locations/LOCATION/keyRings/RING/cryptoKeys/KEY
+```
+
+### Secure Deletion
+
+When decommissioning storage:
+
+```bash
+# Securely wipe data before disposal
+sudo shred -vfz -n 3 /dev/sdb
+
+# For cloud storage, ensure deletion policies
+aws s3 rm s3://nativelink-cas --recursive
+aws s3api delete-bucket --bucket nativelink-cas
+```
+
+## Monitoring and Auditing
+
+### Enable Access Logging
+
+Configure logging to track access and detect anomalies:
+
+```json5
+{
+  servers: [
+    {
+      experimental_identity_header: {
+        header_name: "x-client-id",
+        required: true  // Track all clients
+      },
+      // ... other configuration
+    }
+  ]
+}
+```
+
+Centralize logs for security analysis:
+
+```bash
+# Configure systemd to forward logs
+sudo journalctl -u nativelink -f | logger -t nativelink -p local0.info
+```
+
+### Monitor for Security Events
+
+Set up alerts for:
+- Failed TLS handshakes (potential unauthorized access attempts)
+- Certificate expiration warnings
+- Unusual traffic patterns or volumes
+- Worker connection failures
+- Configuration changes
+
+<Note>
+Integrate NativeLink's OpenTelemetry metrics with your SIEM (Security Information and Event Management) system for comprehensive security monitoring.
+</Note>
+
+### Health Check Security
+
+Protect health check endpoints from public access:
+
+```json5
+{
+  services: {
+    health: {
+      path: "/status"
+    }
+  }
+}
+```
+
+Restrict access via firewall or reverse proxy:
+
+```nginx
+# Nginx configuration
+location /status {
+  allow 127.0.0.1;      # Localhost only
+  allow 10.0.0.0/24;    # Internal monitoring
+  deny all;
+  proxy_pass http://nativelink:50051/status;
+}
+```
+
+## Vulnerability Management
+
+### Keep NativeLink Updated
+
+Regularly update to receive security patches:
+
+```bash
+# Check current version
+nativelink --version
+
+# Update to latest version
+# For Docker:
+docker pull ghcr.io/tracemachina/nativelink:latest
+
+# For Kubernetes:
+kubectl set image deployment/nativelink \
+  nativelink=ghcr.io/tracemachina/nativelink:latest
+```
+
+<Note>
+Subscribe to [NativeLink Security Advisories](https://github.com/TraceMachina/nativelink/security/advisories) to receive notifications about vulnerabilities.
+</Note>
+
+### OCI Image Verification
+
+Verify the authenticity of NativeLink container images:
+
+```bash
+# Get the latest image tag
+export LATEST=$(nix eval github:TraceMachina/nativelink#image.imageTag --raw)
+
+# Verify the signature
+cosign verify ghcr.io/tracemachina/nativelink:${LATEST} \
+  --certificate-identity=https://github.com/TraceMachina/nativelink/.github/workflows/image.yaml@refs/heads/main \
+  --certificate-oidc-issuer=https://token.actions.githubusercontent.com
+```
+
+### Dependency Scanning
+
+For organizations building NativeLink from source:
+
+```bash
+# Scan for vulnerabilities using cargo-audit
+cargo install cargo-audit
+cargo audit
+
+# Update dependencies
+cargo update
+cargo audit
+```
+
+## Incident Response
+
+### Preparation
+
+<Steps>
+  <Step title="Document runbooks">
+    Create incident response procedures for:
+    - Certificate compromise
+    - Worker compromise
+    - Data breach
+    - Service disruption
+  </Step>
+  <Step title="Maintain backups">
+    Regular backups of configuration and critical data
+  </Step>
+  <Step title="Test recovery">
+    Periodic disaster recovery drills
+  </Step>
+  <Step title="Contact list">
+    Maintain up-to-date security contact information
+  </Step>
+</Steps>
+
+### Certificate Compromise Response
+
+If a private key is compromised:
+
+<Steps>
+  <Step title="Revoke certificate">
+    Add the compromised certificate to the CRL:
+    ```bash
+    openssl ca -config ca.conf -revoke compromised-cert.pem
+    openssl ca -config ca.conf -gencrl -out new-crl.pem
+    ```
+  </Step>
+  <Step title="Deploy new CRL">
+    Update `client_crl_file` on all servers
+  </Step>
+  <Step title="Issue new certificates">
+    Generate new certificates with different keys
+  </Step>
+  <Step title="Update clients">
+    Deploy new certificates to affected workers/clients
+  </Step>
+  <Step title="Monitor">
+    Watch for connection attempts with revoked certificates
+  </Step>
+</Steps>
+
+### Reporting Security Issues
+
+If you discover a security vulnerability:
+
+<Warning>
+Do **not** create a public GitHub issue for security vulnerabilities.
+</Warning>
+
+Report vulnerabilities via:
+- **GitHub Security Advisory**: [github.com/TraceMachina/nativelink/security](https://github.com/TraceMachina/nativelink/security)
+- **Email**: Contact the NativeLink security team at:
+  - blaise@tracemachina.com
+  - marcus@tracemachina.com
+  - blake@tracemachina.com
+  - aaron@tracemachina.com
+
+## Compliance
+
+### Data Residency
+
+Ensure build artifacts stay in required regions:
+
+```json5
+{
+  stores: [
+    {
+      name: "eu_cas",
+      experimental_cloud_object_store: {
+        provider: "aws",
+        region: "eu-west-1",  // EU region
+        bucket: "nativelink-eu-cas"
+      }
+    }
+  ]
+}
+```
+
+### Audit Logging
+
+For compliance requirements (GDPR, SOC 2, etc.), enable comprehensive logging:
+
+```bash
+# Configure audit logging
+export RUST_LOG=nativelink=info,nativelink::services=debug
+
+# Log to file with rotation
+ExecStart=/usr/bin/nativelink /etc/nativelink/config.json5 >> /var/log/nativelink/audit.log 2>&1
+```
+
+Log retention policy example:
+
+```bash
+# Rotate logs daily, keep 90 days
+/var/log/nativelink/*.log {
+  daily
+  rotate 90
+  compress
+  delaycompress
+  notifempty
+  create 0640 nativelink nativelink
+}
+```
+
+### Access Control Policies
+
+Document and enforce access policies:
+
+- Who can deploy configuration changes
+- Certificate issuance approval process
+- Worker registration procedures
+- Incident response team members
+- Data retention and deletion policies
+
+## Security Checklist
+
+Use this checklist for production deployments:
+
+- [ ] TLS enabled on all servers
+- [ ] mTLS configured for Worker API
+- [ ] Certificates from trusted CA (not self-signed)
+- [ ] Certificate rotation automated
+- [ ] Worker API isolated from client traffic
+- [ ] Firewall rules restrict Worker API access
+- [ ] NativeLink runs as non-root user
+- [ ] Private keys have restrictive permissions (400/600)
+- [ ] Configuration files protected (600)
+- [ ] Data at rest encrypted
+- [ ] Cloud storage encryption enabled
+- [ ] Secrets not committed to version control
+- [ ] Access logging enabled with client identity tracking
+- [ ] Security monitoring and alerts configured
+- [ ] Health checks accessible only to monitoring systems
+- [ ] Regular vulnerability scanning in place
+- [ ] OCI image signatures verified
+- [ ] Incident response procedures documented
+- [ ] Regular security audits scheduled
+- [ ] CRL configured and updated regularly
+- [ ] Backup and disaster recovery tested
+- [ ] Compliance requirements documented and met
+
+## Additional Resources
+
+- [NativeLink Security Policy](https://github.com/TraceMachina/nativelink/security/policy)
+- [Authentication Configuration](/security/authentication)
+- [TLS Configuration](/security/tls)
+- [OCI Image Verification](https://github.com/TraceMachina/nativelink/pkgs/container/nativelink)
+- [Security Advisories](https://github.com/TraceMachina/nativelink/security/advisories)

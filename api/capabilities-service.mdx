@@ -1,0 +1,210 @@
+---
+title: Capabilities service
+description: Query server capabilities and configuration
+---
+
+The Capabilities service allows clients to query server capabilities before submitting work.
+
+## Overview
+
+The Capabilities service provides:
+- Supported digest functions
+- Maximum request sizes
+- Action cache capabilities
+- Execution capabilities
+- API version information
+
+**Key features:**
+- Discover server configuration
+- Validate client compatibility
+- Query platform properties
+
+## Configuration
+
+<ParamField path="instance_name" type="string" required>
+  The instance name for this capabilities endpoint
+</ParamField>
+
+<ParamField path="action_scheduler" type="string">
+  Reference to scheduler (for execution capabilities)
+</ParamField>
+
+```json5
+{
+  services: {
+    capabilities: {
+      instance_name: "main",
+      action_scheduler: "MAIN_SCHEDULER"
+    }
+  }
+}
+```
+
+## gRPC Methods
+
+### GetCapabilities
+
+Query server capabilities.
+
+**Request:**
+
+<ParamField path="instance_name" type="string" required>
+  The instance name
+</ParamField>
+
+**Response:**
+
+<ResponseField name="cache_capabilities" type="CacheCapabilities">
+  CAS and AC capabilities:
+  - `digest_functions`: Supported hash functions (SHA256, SHA1, etc.)
+  - `action_cache_update_capabilities`: AC update support
+  - `cache_priority_capabilities`: Priority range
+  - `max_batch_total_size_bytes`: Batch operation limits
+  - `symlink_absolute_path_strategy`: Symlink handling
+</ResponseField>
+
+<ResponseField name="execution_capabilities" type="ExecutionCapabilities">
+  Execution service capabilities:
+  - `digest_function`: Hash function for execution
+  - `exec_enabled`: True if remote execution is available
+  - `execution_priority_capabilities`: Priority range
+  - `supported_node_properties`: Platform properties recognized by workers
+</ResponseField>
+
+<ResponseField name="deprecated_api_version" type="SemVer">
+  Deprecated field (use low_api_version/high_api_version)
+</ResponseField>
+
+<ResponseField name="low_api_version" type="SemVer">
+  Minimum Remote Execution API version supported
+</ResponseField>
+
+<ResponseField name="high_api_version" type="SemVer">
+  Maximum Remote Execution API version supported
+</ResponseField>
+
+**Example with grpcurl:**
+
+```bash
+grpcurl -plaintext \
+  -d '{"instance_name": "main"}' \
+  localhost:50051 build.bazel.remote.execution.v2.Capabilities/GetCapabilities
+```
+
+**Example response:**
+
+```json
+{
+  "cache_capabilities": {
+    "digest_functions": ["SHA256"],
+    "action_cache_update_capabilities": {
+      "update_enabled": true
+    },
+    "max_batch_total_size_bytes": "4194304",
+    "symlink_absolute_path_strategy": "ALLOWED"
+  },
+  "execution_capabilities": {
+    "digest_function": "SHA256",
+    "exec_enabled": true,
+    "execution_priority_capabilities": {
+      "priorities": [{"min_priority": 0, "max_priority": 10}]
+    },
+    "supported_node_properties": [
+      "OSFamily",
+      "cpu_count",
+      "memory_kb"
+    ]
+  },
+  "low_api_version": {"major": 2, "minor": 0},
+  "high_api_version": {"major": 2, "minor": 3}
+}
+```
+
+## Digest Functions
+
+Supported hash functions:
+
+<Tabs>
+  <Tab title="SHA256">
+    Default and most common. 32-byte (256-bit) hash.
+    
+    **NativeLink default**: SHA256
+  </Tab>
+  
+  <Tab title="SHA1">
+    Legacy 20-byte (160-bit) hash.
+    
+    <Warning>SHA1 is cryptographically weak - use SHA256 unless required for compatibility</Warning>
+  </Tab>
+  
+  <Tab title="MD5">
+    Legacy 16-byte (128-bit) hash.
+    
+    <Warning>MD5 is cryptographically broken - avoid if possible</Warning>
+  </Tab>
+  
+  <Tab title="BLAKE3">
+    Modern 32-byte (256-bit) hash, faster than SHA256.
+    
+    <Note>Requires explicit configuration in NativeLink</Note>
+  </Tab>
+</Tabs>
+
+## Platform Properties
+
+The `supported_node_properties` field lists platform properties that workers can match.
+
+Common properties:
+- `OSFamily`: Operating system (Linux, Windows, Darwin)
+- `cpu_count`: Number of CPU cores
+- `memory_kb`: RAM in kilobytes
+- `disk_read_iops`: Disk read IOPS
+- `disk_write_iops`: Disk write IOPS
+- `network_kbps`: Network bandwidth
+
+<Tip>Query capabilities before submitting actions to ensure worker compatibility</Tip>
+
+## Configuration in NativeLink
+
+Set the digest function globally:
+
+```json5
+{
+  global: {
+    default_digest_hash_function: "sha256" // or "sha1", "md5", "blake3"
+  }
+}
+```
+
+The capabilities service automatically reflects this configuration.
+
+## Client Usage
+
+Typical client flow:
+
+<Steps>
+  <Step title="Query capabilities">
+    Call GetCapabilities on startup
+  </Step>
+  
+  <Step title="Validate compatibility">
+    Check that server supports required digest function and API version
+  </Step>
+  
+  <Step title="Configure client">
+    Set max batch sizes and other limits based on server capabilities
+  </Step>
+  
+  <Step title="Submit work">
+    Use discovered platform properties for action specifications
+  </Step>
+</Steps>
+
+## Error Codes
+
+| Code | Description |
+|------|-------------|
+| `NOT_FOUND` | Instance name not configured |
+| `INVALID_ARGUMENT` | Invalid instance name format |
+
+<Info>The Capabilities service follows the [Remote Execution API v2 specification](https://github.com/bazelbuild/remote-apis/blob/main/build/bazel/remote/execution/v2/remote_execution.proto)</Info>

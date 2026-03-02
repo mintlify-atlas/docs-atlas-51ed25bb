@@ -1,0 +1,604 @@
+---
+title: Multi-Worker Setup
+description: Configure distributed build execution with multiple workers sharing a common Content Addressable Storage
+---
+
+This example demonstrates how to configure NativeLink with multiple workers for distributed build execution. Multiple workers enable parallel job execution and horizontal scaling of build capacity.
+
+## Architecture Overview
+
+A multi-worker setup consists of:
+
+1. **CAS Server**: Stores build artifacts (Content Addressable Storage) and action cache
+2. **Scheduler**: Assigns jobs to workers based on platform properties and availability
+3. **Multiple Workers**: Execute build actions in parallel
+
+<Note>
+**Critical Requirement**: All workers MUST share the same CAS storage path. Using isolated storage paths will cause "Object not found" errors when workers try to access artifacts stored by other workers.
+</Note>
+
+## Complete Configuration
+
+### CAS Server Configuration
+
+```json5
+{
+  stores: [
+    {
+      name: "CAS_MAIN_STORE",
+      compression: {
+        compression_algorithm: {
+          lz4: {},
+        },
+        backend: {
+          filesystem: {
+            content_path: "/data/cas/content",
+            temp_path: "/data/cas/tmp",
+            eviction_policy: {
+              max_bytes: 10000000000, // 10GB
+            },
+          },
+        },
+      },
+    },
+    {
+      name: "AC_MAIN_STORE",
+      filesystem: {
+        content_path: "/data/cas/ac_content",
+        temp_path: "/data/cas/ac_tmp",
+        eviction_policy: {
+          max_bytes: 500000000, // 500MB
+        },
+      },
+    },
+  ],
+  servers: [
+    {
+      listener: {
+        http: {
+          socket_address: "0.0.0.0:50051",
+        },
+      },
+      services: {
+        cas: [
+          {
+            cas_store: "CAS_MAIN_STORE",
+          },
+        ],
+        ac: [
+          {
+            ac_store: "AC_MAIN_STORE",
+          },
+        ],
+        capabilities: [],
+        bytestream: {
+          cas_stores: {
+            "": "CAS_MAIN_STORE",
+          },
+        },
+        fetch: {},
+        push: {},
+      },
+    },
+  ],
+}
+```
+
+### Scheduler Configuration
+
+```json5
+{
+  stores: [
+    {
+      name: "GRPC_LOCAL_STORE",
+      grpc: {
+        instance_name: "",
+        endpoints: [
+          {
+            address: "grpc://${CAS_ENDPOINT:-127.0.0.1}:50051",
+          },
+        ],
+        store_type: "cas",
+      },
+    },
+    {
+      name: "GRPC_LOCAL_AC_STORE",
+      grpc: {
+        instance_name: "",
+        endpoints: [
+          {
+            address: "grpc://${CAS_ENDPOINT:-127.0.0.1}:50051",
+          },
+        ],
+        store_type: "ac",
+      },
+    },
+  ],
+  schedulers: [
+    {
+      name: "MAIN_SCHEDULER",
+      simple: {
+        supported_platform_properties: {
+          cpu_count: "minimum",
+          OSFamily: "priority",
+          "container-image": "priority",
+          "lre-rs": "priority",
+          ISA: "exact",
+        },
+      },
+    },
+  ],
+  servers: [
+    {
+      listener: {
+        http: {
+          socket_address: "0.0.0.0:50052",
+        },
+      },
+      services: {
+        ac: [
+          {
+            ac_store: "GRPC_LOCAL_AC_STORE",
+          },
+        ],
+        execution: [
+          {
+            cas_store: "GRPC_LOCAL_STORE",
+            scheduler: "MAIN_SCHEDULER",
+          },
+        ],
+        capabilities: [
+          {
+            remote_execution: {
+              scheduler: "MAIN_SCHEDULER",
+            },
+          },
+        ],
+      },
+    },
+    {
+      listener: {
+        http: {
+          socket_address: "0.0.0.0:50061",
+        },
+      },
+      services: {
+        worker_api: {
+          scheduler: "MAIN_SCHEDULER",
+        },
+        health: {},
+      },
+    },
+  ],
+}
+```
+
+### Worker Configuration
+
+```json5
+{
+  stores: [
+    {
+      name: "GRPC_LOCAL_STORE",
+      grpc: {
+        instance_name: "",
+        endpoints: [
+          {
+            address: "grpc://${CAS_ENDPOINT:-127.0.0.1}:50051",
+          },
+        ],
+        store_type: "cas",
+      },
+    },
+    {
+      name: "GRPC_LOCAL_AC_STORE",
+      grpc: {
+        instance_name: "",
+        endpoints: [
+          {
+            address: "grpc://${CAS_ENDPOINT:-127.0.0.1}:50051",
+          },
+        ],
+        store_type: "ac",
+      },
+    },
+    {
+      name: "WORKER_FAST_SLOW_STORE",
+      fast_slow: {
+        fast: {
+          filesystem: {
+            content_path: "/root/.cache/nativelink/data-worker-test/content_path-cas",
+            temp_path: "/root/.cache/nativelink/data-worker-test/tmp_path-cas",
+            eviction_policy: {
+              max_bytes: 10000000000, // 10GB
+            },
+          },
+        },
+        fast_direction: "get",
+        slow: {
+          ref_store: {
+            name: "GRPC_LOCAL_STORE",
+          },
+        },
+      },
+    },
+  ],
+  workers: [
+    {
+      local: {
+        worker_api_endpoint: {
+          uri: "grpc://${SCHEDULER_ENDPOINT:-127.0.0.1}:50061",
+        },
+        cas_fast_slow_store: "WORKER_FAST_SLOW_STORE",
+        upload_action_result: {
+          ac_store: "GRPC_LOCAL_AC_STORE",
+        },
+        work_directory: "/root/.cache/nativelink/work",
+        platform_properties: {
+          cpu_count: {
+            query_cmd: "nproc",
+          },
+          OSFamily: {
+            values: [""],
+          },
+          "container-image": {
+            values: [""],
+          },
+          ISA: {
+            values: ["x86-64"],
+          },
+        },
+      },
+    },
+  ],
+  servers: [],
+}
+```
+
+## Key Concepts
+
+### GRPC Store
+
+Workers and schedulers connect to the remote CAS server using GRPC stores:
+
+```json5
+grpc: {
+  instance_name: "",
+  endpoints: [
+    {
+      address: "grpc://${CAS_ENDPOINT:-127.0.0.1}:50051",
+    },
+  ],
+  store_type: "cas",  // or "ac" for action cache
+}
+```
+
+<Note>
+**Environment Variables**: Use `${CAS_ENDPOINT}` and `${SCHEDULER_ENDPOINT}` to make configurations portable across environments. Set these when starting services.
+</Note>
+
+### Fast-Slow Store with Remote Backend
+
+Workers use a local cache with remote fallback:
+
+```json5
+fast_slow: {
+  fast: {
+    filesystem: {
+      content_path: "/root/.cache/nativelink/data-worker-test/content_path-cas",
+      eviction_policy: {
+        max_bytes: 10000000000,
+      },
+    },
+  },
+  fast_direction: "get",  // Cache reads but write through to slow
+  slow: {
+    ref_store: {
+      name: "GRPC_LOCAL_STORE",  // Remote CAS via gRPC
+    },
+  },
+}
+```
+
+**Behavior**:
+- **Read**: Check local cache → Fetch from remote CAS → Cache locally
+- **Write**: Write directly to remote CAS (skip local cache)
+- **Result**: Warm local cache for reads, avoid storage waste from one-off writes
+
+### Platform Property Queries
+
+Workers can dynamically determine platform properties:
+
+```json5
+platform_properties: {
+  cpu_count: {
+    query_cmd: "nproc",  // Run command to get CPU count
+  },
+  OSFamily: {
+    values: [""],  // Empty string = any OS
+  },
+  ISA: {
+    values: ["x86-64"],  // Static value
+  },
+}
+```
+
+## Docker Compose Deployment
+
+### docker-compose.yml
+
+```yaml
+version: '3.8'
+
+services:
+  cas:
+    image: ghcr.io/tracemachina/nativelink:latest
+    command: /config/cas.json5
+    volumes:
+      - ./cas-server-multi-worker.json5:/config/cas.json5
+      - cas-data:/data/cas
+    ports:
+      - "50051:50051"
+    networks:
+      - nativelink
+
+  scheduler:
+    image: ghcr.io/tracemachina/nativelink:latest
+    command: /config/scheduler.json5
+    volumes:
+      - ./scheduler-multi-worker.json5:/config/scheduler.json5
+    environment:
+      - CAS_ENDPOINT=cas
+    ports:
+      - "50052:50052"
+      - "50061:50061"
+    networks:
+      - nativelink
+    depends_on:
+      - cas
+
+  worker-1:
+    image: ghcr.io/tracemachina/nativelink:latest
+    command: /config/worker.json5
+    volumes:
+      - ./worker.json5:/config/worker.json5
+      - cas-data:/root/.cache/nativelink/data-worker-test  # SHARED volume
+    environment:
+      - CAS_ENDPOINT=cas
+      - SCHEDULER_ENDPOINT=scheduler
+    networks:
+      - nativelink
+    depends_on:
+      - scheduler
+
+  worker-2:
+    image: ghcr.io/tracemachina/nativelink:latest
+    command: /config/worker.json5
+    volumes:
+      - ./worker.json5:/config/worker.json5
+      - cas-data:/root/.cache/nativelink/data-worker-test  # SAME shared volume
+    environment:
+      - CAS_ENDPOINT=cas
+      - SCHEDULER_ENDPOINT=scheduler
+    networks:
+      - nativelink
+    depends_on:
+      - scheduler
+
+  worker-3:
+    image: ghcr.io/tracemachina/nativelink:latest
+    command: /config/worker.json5
+    volumes:
+      - ./worker.json5:/config/worker.json5
+      - cas-data:/root/.cache/nativelink/data-worker-test  # SAME shared volume
+    environment:
+      - CAS_ENDPOINT=cas
+      - SCHEDULER_ENDPOINT=scheduler
+    networks:
+      - nativelink
+    depends_on:
+      - scheduler
+
+volumes:
+  cas-data:  # Single shared volume for CAS and all workers
+
+networks:
+  nativelink:
+```
+
+<Note>
+**Shared Volume**: The `cas-data` volume is mounted by both the CAS server and all workers. This ensures workers can access artifacts via hardlinks when possible, improving performance.
+</Note>
+
+## Starting the Multi-Worker Setup
+
+```bash
+# Start all services
+docker compose up -d
+
+# Scale to 5 workers
+docker compose up -d --scale worker=5
+
+# View logs
+docker compose logs -f
+
+# Check worker registration
+docker compose logs scheduler | grep "Worker registered"
+```
+
+## Testing the Setup
+
+### Bazel Build
+
+```bash
+bazel build //... \
+  --remote_cache=grpc://127.0.0.1:50051 \
+  --remote_executor=grpc://127.0.0.1:50052 \
+  --jobs=50  # High parallelism to utilize all workers
+```
+
+### Verify Distribution
+
+```bash
+# Check which workers executed jobs
+docker compose logs | grep "Executing action" | awk '{print $1}' | sort | uniq -c
+
+# Example output:
+#  342 worker-1
+#  356 worker-2
+#  311 worker-3
+```
+
+## Common Issues and Solutions
+
+### "Object not found" Errors
+
+**Symptom**:
+```
+Object 7fd25e01d12373a2d1712e446881c9246a9698da4e7eafecdaeeaaff62195a82-148
+not found in either fast or slow store.
+```
+
+**Cause**: Workers are using different CAS storage paths
+
+**Solution**:
+
+<CodeGroup>
+
+```yaml Correct - Shared Volume
+volumes:
+  - cas-data:/data/cas
+
+volumes:
+  cas-data:  # Shared across all workers
+```
+
+```yaml Incorrect - Isolated Volumes
+volumes:
+  - ./worker-1-data:/data/cas  # ❌ Each worker has its own data
+```
+
+</CodeGroup>
+
+Verify with:
+```bash
+docker inspect <worker-container> | grep -A 5 Mounts
+```
+
+### Workers Not Receiving Jobs
+
+**Check Scheduler Connection**:
+```bash
+docker compose logs worker-1 | grep "Connected to scheduler"
+```
+
+**Check Platform Properties Match**:
+```bash
+# View worker properties
+docker compose logs worker-1 | grep "platform_properties"
+
+# Ensure job requirements match
+bazel build //... \
+  --remote_executor=grpc://127.0.0.1:50052 \
+  --remote_default_exec_properties=OSFamily=linux,ISA=x86-64
+```
+
+### High CAS Server Load
+
+**Symptom**: CAS server becomes bottleneck
+
+**Solution**: Add local worker caches
+
+```json5
+// In worker configuration
+fast_slow: {
+  fast: {
+    filesystem: {
+      eviction_policy: {
+        max_bytes: 50000000000,  // Increase to 50GB
+      },
+    },
+  },
+  // ...
+}
+```
+
+## Scaling Considerations
+
+### Horizontal Scaling
+
+```bash
+# Add more workers dynamically
+docker compose up -d --scale worker=10
+
+# Reduce workers
+docker compose up -d --scale worker=3
+```
+
+### Resource Limits
+
+```yaml
+worker-1:
+  deploy:
+    resources:
+      limits:
+        cpus: '4'
+        memory: 8G
+      reservations:
+        cpus: '2'
+        memory: 4G
+```
+
+### Network Optimization
+
+For distributed workers across machines:
+
+```json5
+// Use compression for remote communication
+grpc: {
+  endpoints: [
+    {
+      address: "grpc://cas-server.example.com:50051",
+      compression: "gzip",
+    },
+  ],
+}
+```
+
+## Production Deployment
+
+For production multi-worker setups:
+
+1. **Use persistent storage**: Replace Docker volumes with NFS, S3, or distributed filesystem
+2. **Monitor worker health**: Implement health checks and auto-restart
+3. **Load balancing**: Use multiple scheduler replicas for high availability
+4. **Authentication**: Add mTLS or token-based auth for worker registration
+5. **Metrics**: Export Prometheus metrics for monitoring
+
+### Example: S3 Shared Storage
+
+Replace filesystem CAS with S3 for true distributed storage:
+
+```json5
+// In CAS server configuration
+stores: [
+  {
+    name: "CAS_MAIN_STORE",
+    experimental_cloud_object_store: {
+      provider: "aws",
+      region: "us-east-1",
+      bucket: "my-build-cache",
+      key_prefix: "cas/",
+    },
+  },
+]
+```
+
+See [S3 Backend Configuration](/config/examples/s3-backend) for complete example.
+
+## See Also
+
+- [Basic CAS Configuration](/config/examples/basic-cas) - Single-worker setup
+- [S3 Backend](/config/examples/s3-backend) - Cloud storage for distributed workers
+- [Kubernetes Configuration](/config/examples/kubernetes) - Production Kubernetes deployment
+- [Store Types](/config/stores) - Complete store configuration reference

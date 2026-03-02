@@ -1,0 +1,232 @@
+---
+title: Basic CAS Configuration
+description: A simple Content Addressable Storage setup with local filesystem backend and integrated worker
+---
+
+This example demonstrates a basic all-in-one NativeLink configuration with CAS (Content Addressable Storage), AC (Action Cache), scheduler, and local worker. This is ideal for development, testing, or single-machine deployments.
+
+## Complete Configuration
+
+```json5
+{
+  stores: [
+    {
+      name: "AC_MAIN_STORE",
+      filesystem: {
+        content_path: "/tmp/nativelink/data-worker-test/content_path-ac",
+        temp_path: "/tmp/nativelink/data-worker-test/tmp_path-ac",
+        eviction_policy: {
+          max_bytes: 1000000000, // 1GB
+        },
+      },
+    },
+    {
+      name: "WORKER_FAST_SLOW_STORE",
+      fast_slow: {
+        fast: {
+          filesystem: {
+            content_path: "/tmp/nativelink/data-worker-test/content_path-cas",
+            temp_path: "/tmp/nativelink/data-worker-test/tmp_path-cas",
+            eviction_policy: {
+              max_bytes: 10000000000, // 10GB
+            },
+          },
+        },
+        slow: {
+          noop: {},
+        },
+      },
+    },
+  ],
+  schedulers: [
+    {
+      name: "MAIN_SCHEDULER",
+      simple: {
+        supported_platform_properties: {
+          cpu_count: "minimum",
+          memory_kb: "minimum",
+          OSFamily: "priority",
+          "container-image": "priority",
+          ISA: "exact",
+        },
+      },
+    },
+  ],
+  workers: [
+    {
+      local: {
+        worker_api_endpoint: {
+          uri: "grpc://127.0.0.1:50061",
+        },
+        cas_fast_slow_store: "WORKER_FAST_SLOW_STORE",
+        upload_action_result: {
+          ac_store: "AC_MAIN_STORE",
+        },
+        work_directory: "/tmp/nativelink/work",
+        platform_properties: {
+          cpu_count: {
+            values: ["16"],
+          },
+          cpu_arch: {
+            values: ["x86_64"],
+          },
+          ISA: {
+            values: ["x86-64"],
+          },
+        },
+      },
+    },
+  ],
+  servers: [
+    {
+      name: "public",
+      listener: {
+        http: {
+          socket_address: "0.0.0.0:50051",
+        },
+      },
+      services: {
+        cas: [
+          {
+            instance_name: "main",
+            cas_store: "WORKER_FAST_SLOW_STORE",
+          },
+        ],
+        ac: [
+          {
+            instance_name: "main",
+            ac_store: "AC_MAIN_STORE",
+          },
+        ],
+        execution: [
+          {
+            instance_name: "main",
+            cas_store: "WORKER_FAST_SLOW_STORE",
+            scheduler: "MAIN_SCHEDULER",
+          },
+        ],
+        capabilities: [
+          {
+            instance_name: "main",
+            remote_execution: {
+              scheduler: "MAIN_SCHEDULER",
+            },
+          },
+        ],
+        bytestream: [
+          {
+            instance_name: "main",
+            cas_store: "WORKER_FAST_SLOW_STORE",
+          },
+        ],
+      },
+    },
+    {
+      name: "private_workers_servers",
+      listener: {
+        http: {
+          socket_address: "0.0.0.0:50061",
+        },
+      },
+      services: {
+        worker_api: {
+          scheduler: "MAIN_SCHEDULER",
+        },
+        admin: {},
+        health: {},
+      },
+    },
+  ],
+  global: {
+    max_open_files: 24576,
+  },
+}
+```
+
+## Key Components
+
+### Stores
+
+<Note>
+**Fast-Slow Store Pattern**: The `WORKER_FAST_SLOW_STORE` uses a filesystem "fast" store with a "noop" slow store. This is appropriate for single-machine setups where the CAS and worker share the same storage.
+</Note>
+
+- **AC_MAIN_STORE**: Action Cache with 1GB capacity for storing build action results
+- **WORKER_FAST_SLOW_STORE**: Primary CAS with 10GB capacity
+  - **fast**: Filesystem store that workers use for hardlinks to job directories
+  - **slow**: No-op store since there's no shared remote storage in this config
+
+### Scheduler
+
+The `simple` scheduler supports platform property matching:
+- **minimum**: Select workers with at least the requested amount (cpu_count, memory_kb)
+- **priority**: Prefer exact matches, fall back to available workers (OSFamily, container-image)
+- **exact**: Require exact match (ISA architecture)
+
+### Worker Configuration
+
+```json5
+workers: [
+  {
+    local: {
+      worker_api_endpoint: {
+        uri: "grpc://127.0.0.1:50061",
+      },
+      cas_fast_slow_store: "WORKER_FAST_SLOW_STORE",
+      work_directory: "/tmp/nativelink/work",
+      platform_properties: {
+        cpu_count: { values: ["16"] },
+        cpu_arch: { values: ["x86_64"] },
+      },
+    },
+  },
+]
+```
+
+<Note>
+**Platform Properties**: These properties advertise worker capabilities to the scheduler. Jobs with matching platform requirements will be routed to this worker.
+</Note>
+
+### Server Endpoints
+
+Two servers provide different API surfaces:
+
+**Public Server (port 50051)**:
+- CAS, AC, Execution, Capabilities, ByteStream services
+- Client-facing API for build tools
+
+**Private Server (port 50061)**:
+- Worker API for worker registration and communication
+- Admin and health check endpoints
+- Should be firewalled from public access
+
+## Usage
+
+Save this configuration as `basic-cas.json5` and start NativeLink:
+
+```bash
+nativelink basic-cas.json5
+```
+
+Connect a Bazel client:
+
+```bash
+bazel build //... \
+  --remote_cache=grpc://127.0.0.1:50051 \
+  --remote_executor=grpc://127.0.0.1:50051 \
+  --remote_instance_name=main
+```
+
+## Production Considerations
+
+<Note>
+This basic configuration is suitable for:
+- Development and testing
+- Single-machine deployments
+- Learning NativeLink configuration
+
+For production, consider:
+- [S3 backend](/config/examples/s3-backend) for durable storage
+- [Multi-worker setup](/config/examples/multi-worker) for distributed execution
+- [Kubernetes deployment](/config/examples/kubernetes) for high availability
+</Note>

@@ -1,0 +1,211 @@
+---
+title: "Memory Store"
+description: "High-speed in-memory storage for build artifacts and cache data"
+---
+
+## Overview
+
+The Memory store stores all data in a hashmap in memory, providing the fastest possible access times at the cost of volatility. Data is lost on restart, making it ideal for short-lived caches, development environments, or as a fast tier in multi-tiered storage configurations.
+
+## Use Cases
+
+- **Fast cache tier**: First tier in fast-slow configurations for frequently accessed data
+- **Development and testing**: Quick setup without filesystem dependencies
+- **Action Cache (AC)**: Storing build action results that can be regenerated
+- **Small frequently-accessed objects**: Hot data that benefits from zero I/O latency
+- **Temporary caching layers**: Short-lived caches that don't require persistence
+
+## Performance Characteristics
+
+- **Read performance**: Extremely fast (in-memory hashmap lookup)
+- **Write performance**: Extremely fast (in-memory copy)
+- **Durability**: None - all data is lost on restart
+- **Memory usage**: Directly proportional to cached data size
+- **Startup time**: Instant (no scanning required)
+
+## Configuration
+
+<ParamField path="eviction_policy" type="EvictionPolicy">
+  Policy used to evict items out of the store.
+  
+  **Critical**: Failure to set this value will cause items to never be removed from the store, causing unbounded memory usage and eventual OOM (Out of Memory) errors.
+  
+  See [Eviction Policy](#eviction-policy) for configuration options.
+</ParamField>
+
+## Eviction Policy
+
+The eviction policy uses an LRU (Least Recently Used) algorithm. Any time an entry is accessed, it updates the timestamp. Inserts and updates execute the eviction policy, removing expired entries and/or the oldest entries until the store size becomes smaller than `max_bytes`.
+
+<ParamField path="eviction_policy.max_bytes" type="number" default="0">
+  Maximum number of bytes before eviction takes place.
+  
+  **Important**: For memory stores, this should always be set to prevent unbounded memory growth.
+  
+  Default: 0 (never evict based on size - **dangerous for memory stores**)
+</ParamField>
+
+<ParamField path="eviction_policy.evict_bytes" type="number" default="0">
+  When eviction starts based on hitting `max_bytes`, continue until `max_bytes - evict_bytes` is met to create a low watermark. This stops operations from thrashing when the store is close to the limit.
+  
+  For example, with `max_bytes: 1GB` and `evict_bytes: 100MB`, eviction continues until memory usage drops to 900MB.
+  
+  Default: 0
+</ParamField>
+
+<ParamField path="eviction_policy.max_seconds" type="number" default="0">
+  Maximum number of seconds for an entry to live since it was last accessed before it is evicted.
+  
+  Useful for automatically expiring old cache entries even if memory limits aren't reached.
+  
+  Default: 0 (never evict based on time)
+</ParamField>
+
+<ParamField path="eviction_policy.max_count" type="number" default="0">
+  Maximum number of entries in the store before eviction takes place.
+  
+  Default: 0 (never evict based on count)
+</ParamField>
+
+## Configuration Examples
+
+### Basic Memory Store
+
+```json
+{
+  "memory": {
+    "eviction_policy": {
+      "max_bytes": "10mb"
+    }
+  }
+}
+```
+
+### Action Cache Configuration
+
+```json
+{
+  "memory": {
+    "eviction_policy": {
+      "max_bytes": "500mb"
+    }
+  }
+}
+```
+
+### With Low Watermark
+
+```json
+{
+  "memory": {
+    "eviction_policy": {
+      "max_bytes": "1gb",
+      "evict_bytes": "100mb"
+    }
+  }
+}
+```
+
+### With Time-Based Eviction
+
+```json
+{
+  "memory": {
+    "eviction_policy": {
+      "max_bytes": "2gb",
+      "evict_bytes": "200mb",
+      "max_seconds": 3600
+    }
+  }
+}
+```
+
+### Fast Tier in Fast-Slow Configuration
+
+```json
+{
+  "fast_slow": {
+    "fast": {
+      "memory": {
+        "eviction_policy": {
+          "max_bytes": "500mb"
+        }
+      }
+    },
+    "slow": {
+      "filesystem": {
+        "content_path": "/tmp/nativelink/data/content_path-cas",
+        "temp_path": "/tmp/nativelink/data/tmp_path-cas",
+        "eviction_policy": {
+          "max_bytes": "2gb"
+        }
+      }
+    }
+  }
+}
+```
+
+### With Environment Variables
+
+```json
+{
+  "memory": {
+    "eviction_policy": {
+      "max_bytes": "${NATIVELINK_CAS_MEMORY_CONTENT_LIMIT:-100mb}"
+    }
+  }
+}
+```
+
+## Implementation Details
+
+### Internal Structure
+
+The memory store uses an `EvictingMap` that wraps entries in a `BytesWrapper` type. This provides:
+- Efficient LRU tracking with timestamp updates on access
+- Automatic eviction when limits are reached
+- Thread-safe concurrent access
+
+### Zero-Copy Optimization
+
+The store uses `Bytes` types for zero-copy data handling where possible, though a full copy is made for long-term storage to prevent holding references to larger underlying buffers.
+
+### Special Cases
+
+- **Zero digest**: The store has special handling for zero-length digests, always treating them as existing with size 0
+- **Memory efficiency**: Internally copies data to prevent holding references to larger source buffers
+
+## Best Practices
+
+<Warning>
+  **Always set max_bytes**: Without a byte limit, the memory store will grow unbounded and cause OOM errors. This is the most critical configuration for memory stores.
+</Warning>
+
+<Tip>
+  **Use evict_bytes for stability**: Set `evict_bytes` to 10-20% of `max_bytes` to prevent thrashing when the cache is nearly full.
+</Tip>
+
+<Tip>
+  **Size appropriately for your workload**: Leave sufficient system memory for other processes. A good rule of thumb is to allocate no more than 50-70% of available RAM to memory stores.
+</Tip>
+
+<Note>
+  **Consider time-based eviction**: For workloads with temporal locality, combining `max_bytes` with `max_seconds` ensures stale entries are removed even if memory limits aren't reached.
+</Note>
+
+<Tip>
+  **Monitor memory usage**: Use system monitoring tools to track actual memory consumption and adjust `max_bytes` as needed.
+</Tip>
+
+## Memory Sizing Guidelines
+
+| System RAM | Recommended max_bytes | Use Case |
+|------------|----------------------|----------|
+| 4GB | 500MB - 1GB | Small development environment |
+| 8GB | 2GB - 4GB | Medium development or small production |
+| 16GB | 4GB - 8GB | Production worker node |
+| 32GB+ | 8GB - 16GB+ | High-performance production cache |
+
+<Note>
+  These are conservative recommendations. Adjust based on your specific workload and other memory requirements.
+</Note>

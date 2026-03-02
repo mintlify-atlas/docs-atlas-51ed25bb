@@ -1,0 +1,186 @@
+---
+title: Configuration Overview
+description: NativeLink configuration file format and structure
+---
+
+NativeLink uses JSON5 configuration files to define stores, schedulers, servers, and workers. The configuration file (`*.json5`) is passed to NativeLink at startup.
+
+## File Format
+
+Configuration files use JSON5 format, which supports:
+- Comments (`//` and `/* */`)
+- Trailing commas
+- Unquoted keys
+- Environment variable expansion with `${VAR}` or `${VAR:-default}`
+
+## Root Structure
+
+A NativeLink configuration file has the following top-level fields:
+
+<ParamField path="stores" type="array" required>
+  List of store configurations. Each store must have a unique `name` field.
+  
+  ```json5
+  stores: [
+    {
+      name: "MY_STORE",
+      memory: {
+        eviction_policy: { max_bytes: "1gb" }
+      }
+    }
+  ]
+  ```
+</ParamField>
+
+<ParamField path="schedulers" type="array">
+  List of scheduler configurations. Required for remote execution.
+  
+  ```json5
+  schedulers: [
+    {
+      name: "MAIN_SCHEDULER",
+      simple: {
+        supported_platform_properties: {
+          cpu_count: "minimum"
+        }
+      }
+    }
+  ]
+  ```
+</ParamField>
+
+<ParamField path="servers" type="array" required>
+  List of server configurations. At least one server is required.
+  
+  ```json5
+  servers: [
+    {
+      name: "public",
+      listener: {
+        http: { socket_address: "0.0.0.0:50051" }
+      },
+      services: { /* ... */ }
+    }
+  ]
+  ```
+</ParamField>
+
+<ParamField path="workers" type="array">
+  List of worker configurations. Required for remote execution.
+  
+  ```json5
+  workers: [
+    {
+      local: {
+        worker_api_endpoint: { uri: "grpc://127.0.0.1:50061" },
+        cas_fast_slow_store: "WORKER_STORE",
+        work_directory: "/tmp/work"
+      }
+    }
+  ]
+  ```
+</ParamField>
+
+<ParamField path="global" type="object">
+  Global configuration options.
+  
+  <Expandable title="properties">
+    <ParamField path="max_open_files" type="number" default="24576">
+      Maximum number of open files. Must be greater than 10.
+    </ParamField>
+    
+    <ParamField path="default_digest_hash_function" type="enum" default="sha256">
+      Default hash function for CAS uploads.
+      
+      Options: `sha256`, `blake3`
+    </ParamField>
+    
+    <ParamField path="default_digest_size_health_check" type="number" default="1048576">
+      Buffer size for health check digest creation (bytes).
+    </ParamField>
+  </Expandable>
+</ParamField>
+
+## Environment Variables
+
+NativeLink supports shell expansion in configuration values:
+
+```json5
+{
+  bucket: "${S3_BUCKET}",
+  region: "${AWS_REGION:-us-east-1}",
+  max_bytes: "${MAX_SIZE:-10gb}"
+}
+```
+
+## Data Size Format
+
+Size values accept human-readable formats:
+- Raw bytes: `1024`
+- Kilobytes: `10kb` or `10KiB`
+- Megabytes: `100mb` or `100MiB`
+- Gigabytes: `5gb` or `5GiB`
+- Terabytes: `1tb` or `1TiB`
+
+## Duration Format
+
+Duration values are specified in seconds unless otherwise noted:
+- Seconds: `30` or `30s`
+- Minutes: `5m` (converted to seconds)
+- Hours: `1h` (converted to seconds)
+
+## Store References
+
+Stores are referenced by name throughout the configuration:
+
+```json5
+{
+  stores: [
+    { name: "CAS_STORE", /* ... */ },
+    { name: "AC_STORE", /* ... */ }
+  ],
+  servers: [{
+    services: {
+      cas: [{ cas_store: "CAS_STORE" }],
+      ac: [{ ac_store: "AC_STORE" }]
+    }
+  }]
+}
+```
+
+## Validation
+
+NativeLink validates configuration at startup:
+- Store names must be unique
+- Referenced stores must exist
+- Referenced schedulers must exist
+- At least one server must be configured
+- Worker stores must be `fast_slow` type with `filesystem` as fast store
+
+## Example Configuration
+
+```json5
+{
+  stores: [
+    {
+      name: "CAS_STORE",
+      filesystem: {
+        content_path: "/var/cache/nativelink/cas",
+        temp_path: "/var/cache/nativelink/tmp",
+        eviction_policy: { max_bytes: "10gb" }
+      }
+    }
+  ],
+  servers: [
+    {
+      listener: {
+        http: { socket_address: "0.0.0.0:50051" }
+      },
+      services: {
+        cas: [{ cas_store: "CAS_STORE" }],
+        bytestream: [{ cas_store: "CAS_STORE" }]
+      }
+    }
+  ]
+}
+```

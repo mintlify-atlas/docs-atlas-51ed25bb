@@ -1,0 +1,268 @@
+---
+title: Contributing Overview
+description: Welcome to NativeLink development - learn how to contribute to the project
+---
+
+NativeLink welcomes contribution from everyone. This guide provides the essential information to help you get started with contributing to NativeLink.
+
+## Contribution Process
+
+Contributions to NativeLink or its dependencies should be made in the form of GitHub pull requests. Each pull request will be reviewed by a core contributor (someone with permission to land patches) and either landed in the main tree or given feedback for changes that would be required.
+
+Should you wish to work on an issue, please claim it first by commenting on the GitHub issue that you want to work on it. This is to prevent duplicated efforts from contributors on the same issue.
+
+## Development Environment
+
+NativeLink supports multiple development workflows:
+
+<CardGroup cols={3}>
+  <Card title="Nix" icon="snowflake" href="/contributing/nix">
+    Recommended development environment with reproducible builds
+  </Card>
+  <Card title="Bazel" icon="cube" href="/contributing/bazel">
+    Primary build system for production builds and testing
+  </Card>
+  <Card title="Cargo" icon="rust" href="/contributing/cargo">
+    Direct Rust development with Cargo toolchain
+  </Card>
+</CardGroup>
+
+## Before You Start
+
+### Git Setup
+
+NativeLink has a specific contribution process to ensure consistent quality across all commits:
+
+<Steps>
+  <Step title="Configure SSH Keys">
+    In your [GitHub settings](https://github.com/settings/keys), set up distinct authentication and signing keys. See GitHub's documentation:
+    - [Generating a new SSH key](https://docs.github.com/en/authentication/connecting-to-github-with-ssh/generating-a-new-ssh-key-and-adding-it-to-the-ssh-agent)
+    - [Adding SSH key to GitHub](https://docs.github.com/en/authentication/connecting-to-github-with-ssh/adding-a-new-ssh-key-to-your-github-account)
+  </Step>
+
+  <Step title="Fork the Repository">
+    Fork the `TraceMachina/nativelink` repository by clicking on the `Fork` button on GitHub.
+  </Step>
+
+  <Step title="Clone Your Fork">
+    ```bash
+    git clone git@github.com:yourusername/nativelink
+    cd nativelink
+    ```
+
+    <Warning>
+      Don't clone the upstream repository directly:
+      ```bash
+      # ❌ Don't do this
+      git clone git@github.com:TraceMachina/nativelink
+      ```
+    </Warning>
+  </Step>
+
+  <Step title="Add Upstream Remote">
+    ```bash
+    git remote add upstream git@github.com:TraceMachina/nativelink
+    ```
+
+    Verify the setup:
+    ```bash
+    git remote -v
+    # Should show:
+    # origin   git@github.com:yourusername/nativelink (fetch)
+    # origin   git@github.com:yourusername/nativelink (push)
+    # upstream git@github.com:TraceMachina/nativelink (fetch)
+    # upstream git@github.com:TraceMachina/nativelink (push)
+    ```
+  </Step>
+
+  <Step title="Configure Commit Signing">
+    Create a `.gitconfig` file in your home directory:
+
+    ```ini
+    [user]
+        name = Your Full Name
+        email = the-email-you-use-on-github@example.com
+        signingkey = ~/.ssh/your_private_signing_key
+
+    [gpg]
+        format = ssh  # Or gpg if you use a GPG key
+
+    [commit]
+        gpgsign = true
+
+    [tag]
+        gpgsign = true
+    ```
+  </Step>
+</Steps>
+
+## Development Workflows
+
+### Building from Source
+
+Choose your preferred build method:
+
+- **[Nix](/contributing/nix)** - Recommended for reproducible builds and CI parity
+- **[Bazel](/contributing/bazel)** - Primary build system with remote execution support
+- **[Cargo](/contributing/cargo)** - Standard Rust development workflow
+
+See [Building from Source](/contributing/building-from-source) for detailed instructions.
+
+### Code Quality
+
+NativeLink maintains high code quality standards:
+
+- **Pre-commit Hooks**: Run `pre-commit run -a` to check formatting and lints
+- **Rust Formatting**: Automatically enforced via `rustfmt`
+- **Clippy Lints**: Strict linting rules defined in `Cargo.toml`
+- **Documentation Tests**: Run `bazel test doctests` to verify code examples
+
+### Testing
+
+Test your changes thoroughly:
+
+```bash
+# Run unit tests with Bazel
+bazel test //...
+
+# Run specific test suite
+bazel test :unit_tests
+
+# Run with Cargo
+cargo test --all
+```
+
+## Creating Pull Requests
+
+<Steps>
+  <Step title="Update Your Fork">
+    ```bash
+    git switch main
+    git pull -r upstream main
+    git push
+    ```
+  </Step>
+
+  <Step title="Create Feature Branch">
+    ```bash
+    git switch -c some-feature
+    ```
+  </Step>
+
+  <Step title="Make Changes and Commit">
+    Follow commit message guidelines:
+    - Use imperative mood ("Add feature" not "Adds feature")
+    - Start with capital letter
+    - No trailing period
+    - Keep title under 50 characters
+    - Add details in commit body (72 char line length)
+
+    ```bash
+    # Good examples:
+    Add remote execution support for workers
+    Fix memory leak in cache store
+    Update documentation for configuration
+
+    # Bad examples:
+    Adds feature.  # Wrong mood, has period
+    add feature    # Not capitalized
+    ```
+  </Step>
+
+  <Step title="Push and Create PR">
+    ```bash
+    git push --set-upstream origin some-feature
+    ```
+
+    Go to [Pull Requests](https://github.com/TraceMachina/nativelink/pulls) and create your PR.
+  </Step>
+
+  <Step title="Review Process">
+    Click the purple `Reviewable` button and add reviewers with `+@reviewer`.
+
+    If you need to make changes:
+    ```bash
+    # Make your changes
+    git commit --amend
+    git push -f
+    ```
+  </Step>
+</Steps>
+
+## Common Tasks
+
+### Fixing Rust Formatting
+
+```bash
+bazel run --config=rustfmt @rules_rust//:rustfmt
+```
+
+### Running Pre-commit Hooks
+
+```bash
+pre-commit run -a
+```
+
+### Setting up rust-analyzer
+
+Generate project configuration for your IDE:
+
+```bash
+bazel run @rules_rust//tools/rust_analyzer:gen_rust_project
+```
+
+### Generating Documentation
+
+```bash
+# All documentation (in Nix environment)
+docs
+
+# With Bazel
+bazel build docs
+
+# Single crate
+bazel build nativelink-config:docs
+
+# Run doc tests
+bazel test doctests
+```
+
+### Generating Code Coverage
+
+```bash
+nix build .#nativelinkCoverageForHost
+# View results in ./result/index.html
+```
+
+## Documentation Style
+
+NativeLink follows the [Microsoft Style Guide](https://learn.microsoft.com/en-us/style-guide/welcome/).
+
+Check documentation with Vale:
+
+```bash
+vale somefile
+```
+
+Pre-commit hooks forbid errors but permit warnings and suggestions.
+
+## Code of Conduct
+
+NativeLink's Code of Conduct is available in the [CODE_OF_CONDUCT](https://github.com/tracemachina/nativelink/tree/main/CODE_OF_CONDUCT.md) file.
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Build from Source" icon="hammer" href="/contributing/building-from-source">
+    Learn how to build NativeLink locally
+  </Card>
+  <Card title="Development with Nix" icon="snowflake" href="/contributing/nix">
+    Set up the recommended development environment
+  </Card>
+  <Card title="Development with Bazel" icon="cube" href="/contributing/bazel">
+    Use Bazel for building and testing
+  </Card>
+  <Card title="Development with Cargo" icon="rust" href="/contributing/cargo">
+    Work with standard Rust tooling
+  </Card>
+</CardGroup>

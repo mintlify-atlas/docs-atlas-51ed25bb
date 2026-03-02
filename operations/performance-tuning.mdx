@@ -1,0 +1,683 @@
+---
+title: Performance Tuning
+description: Optimize NativeLink for maximum throughput, minimal latency, and efficient resource utilization
+---
+
+This guide covers performance optimization strategies for NativeLink deployments, from cache configuration to worker allocation.
+
+## Cache Optimization
+
+### Memory Cache Configuration
+
+Memory caches provide the fastest access but are limited by available RAM.
+
+```json nativelink-config.json
+{
+  "stores": {
+    "MEMORY_CAS": {
+      "memory": {
+        "eviction_policy": {
+          "max_bytes": "10gb"
+        }
+      }
+    }
+  }
+}
+```
+
+<Accordion title="Sizing recommendations">
+  **Small deployments** (< 10 workers):
+  - CAS: 5-10 GB
+  - AC: 1-2 GB
+
+  **Medium deployments** (10-50 workers):
+  - CAS: 20-50 GB
+  - AC: 5-10 GB
+
+  **Large deployments** (50+ workers):
+  - CAS: 100+ GB
+  - AC: 20+ GB
+
+  Monitor `nativelink_cache_size` and eviction rates to right-size your cache.
+</Accordion>
+
+### Tiered Storage (FastSlow)
+
+Combine fast memory cache with slower persistent storage:
+
+```json
+{
+  "stores": {
+    "TIERED_CAS": {
+      "fast_slow": {
+        "fast": {
+          "memory": {
+            "eviction_policy": {"max_bytes": "5gb"}
+          }
+        },
+        "slow": {
+          "filesystem": {
+            "content_path": "/mnt/fast-ssd/nativelink-cas",
+            "temp_path": "/mnt/fast-ssd/nativelink-tmp",
+            "eviction_policy": {"max_bytes": "100gb"}
+          }
+        }
+      }
+    }
+  }
+}
+```
+
+<Info>
+The FastSlow store:
+- Checks fast tier first on reads
+- Promotes slow tier hits to fast tier
+- Writes to both tiers simultaneously
+- Assumes fast tier presence implies slow tier presence
+</Info>
+
+### Deduplication Store
+
+For workloads with similar files (e.g., incremental builds):
+
+```json
+{
+  "stores": {
+    "DEDUP_CAS": {
+      "dedup": {
+        "index_store": {
+          "memory": {
+            "eviction_policy": {"max_bytes": "1gb"}
+          }
+        },
+        "content_store": {
+          "compression": {
+            "compression_algorithm": {"lz4": {}},
+            "backend": {
+              "filesystem": {
+                "content_path": "/var/cache/nativelink-dedup",
+                "eviction_policy": {"max_bytes": "50gb"}
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}
+```
+
+<Accordion title="When to use deduplication">
+  **Good for**:
+  - Incremental builds with mostly unchanged files
+  - Large binary artifacts with common sections
+  - Uncompressed content
+
+  **Not good for**:
+  - Compressed or encrypted content
+  - Highly diverse files
+  - When upload/download isn't the bottleneck
+
+  **Performance impact**:
+  - CPU overhead for rolling hash computation
+  - Storage reduction: 30-70% for typical builds
+  - Network reduction: Similar to storage reduction
+</Accordion>
+
+### Size Partitioning
+
+Route small and large objects to different stores:
+
+```json
+{
+  "stores": {
+    "SIZE_PARTITIONED_CAS": {
+      "size_partitioning": {
+        "size": "128mib",
+        "lower_store": {
+          "memory": {
+            "eviction_policy": {"max_bytes": "5gb"}
+          }
+        },
+        "upper_store": {
+          "filesystem": {
+            "content_path": "/mnt/bulk-storage/large-objects",
+            "eviction_policy": {"max_bytes": "500gb"}
+          }
+        }
+      }
+    }
+  }
+}
+```
+
+<Warning>
+Only use size partitioning on CAS stores where the digest size field is reliable. Do not use on AC stores.
+</Warning>
+
+### Compression
+
+Reduce network transfer and storage at the cost of CPU:
+
+```json
+{
+  "stores": {
+    "COMPRESSED_CAS": {
+      "compression": {
+        "compression_algorithm": {
+          "lz4": {}
+        },
+        "backend": {
+          "grpc": {
+            "instance_name": "main",
+            "endpoints": [{"address": "grpc://remote-cas:50051"}],
+            "store_type": "cas"
+          }
+        }
+      }
+    }
+  }
+}
+```
+
+<Accordion title="Compression algorithm comparison">
+  **LZ4**:
+  - Compression ratio: 2-3x
+  - Speed: Very fast (500+ MB/s)
+  - CPU usage: Low
+  - **Best for**: Most use cases, hot path caches
+
+  **Zstd** (if available):
+  - Compression ratio: 3-5x
+  - Speed: Fast (200-400 MB/s)
+  - CPU usage: Medium
+  - **Best for**: Cold storage, WAN transfers
+
+  **When to compress**:
+  - Network bandwidth is limited
+  - Storage is expensive
+  - CPU capacity is available
+
+  **When not to compress**:
+  - Content is already compressed (images, videos)
+  - CPU is constrained
+  - Local/datacenter networking with high bandwidth
+</Accordion>
+
+## Scheduler Optimization
+
+### Worker Allocation Strategy
+
+```json nativelink-config.json
+{
+  "schedulers": {
+    "main": {
+      "simple": {
+        "allocation_strategy": "most_recently_used"
+      }
+    }
+  }
+}
+```
+
+<Accordion title="least_recently_used (default)">
+  Distributes load evenly across all workers.
+
+  **Pros**:
+  - Balanced resource utilization
+  - Prevents worker overload
+  - Better for heterogeneous workloads
+
+  **Cons**:
+  - Lower cache locality
+  - More cache misses on workers
+
+  **Best for**: Diverse workloads, preventing hot spots
+</Accordion>
+
+<Accordion title="most_recently_used">
+  Prefers recently-used workers to maximize cache hits.
+
+  **Pros**:
+  - Higher cache hit rate on workers
+  - Better for repeated builds
+  - Fewer cold starts
+
+  **Cons**:
+  - Can create hot spots
+  - Some workers may be underutilized
+
+  **Best for**: Incremental builds, CI/CD with cache warming
+</Accordion>
+
+### Timeout Configuration
+
+```json
+{
+  "schedulers": {
+    "main": {
+      "simple": {
+        "worker_timeout_s": 30,
+        "client_action_timeout_s": 600,
+        "max_action_executing_timeout_s": 1800,
+        "retain_completed_for_s": 60
+      }
+    }
+  }
+}
+```
+
+<Accordion title="worker_timeout_s (default: 5)">
+  Time before removing unresponsive workers.
+
+  **Lower values** (5-10s):
+  - Faster failure detection
+  - Quicker reallocation of stuck actions
+  - Risk: Network hiccups remove healthy workers
+
+  **Higher values** (30-60s):
+  - Tolerates transient network issues
+  - Reduces worker churn
+  - Risk: Slow to detect truly dead workers
+
+  **Recommendation**: 30s for production, 10s for development
+</Accordion>
+
+<Accordion title="client_action_timeout_s (default: 60)">
+  Time before marking actions as failed if client stops updating.
+
+  **Recommendation**: 
+  - 300s (5 min) for interactive builds
+  - 600s (10 min) for CI/CD
+  - Match your client's expected update interval
+</Accordion>
+
+<Accordion title="max_action_executing_timeout_s (default: 0/disabled)">
+  Maximum execution time regardless of worker keepalives.
+
+  **When to enable**:
+  - Workers occasionally hang on specific actions
+  - Need hard limit on execution time
+  - Want to enforce build time SLOs
+
+  **Recommendation**: 
+  - 1800s (30 min) for typical builds
+  - 3600s (1 hour) for long-running tests
+  - 0 (disabled) if relying only on `worker_timeout_s`
+</Accordion>
+
+<Accordion title="retain_completed_for_s (default: 60)">
+  How long to keep completed action results in memory.
+
+  **Lower values** (30-60s):
+  - Less memory usage
+  - Risk: `WaitExecution` calls may miss results
+
+  **Higher values** (300-600s):
+  - Better for slow clients
+  - More memory usage
+  - Useful for debugging
+
+  **Recommendation**: 60s for most cases, 300s if clients are slow to poll
+</Accordion>
+
+### Retry Configuration
+
+```json
+{
+  "schedulers": {
+    "main": {
+      "simple": {
+        "max_job_retries": 3
+      }
+    }
+  }
+}
+```
+
+<Info>
+Retries apply to internal errors and timeouts. If an action fails `max_job_retries` times, the scheduler returns the last error to the client instead of retrying indefinitely.
+</Info>
+
+**Recommendations**:
+- **2-3 retries**: Most deployments (default: 3)
+- **0-1 retries**: Flaky infrastructure, prefer failing fast
+- **5+ retries**: Very unreliable workers (investigate root cause instead)
+
+## Worker Configuration
+
+### Concurrent Actions
+
+Control how many actions a worker executes simultaneously:
+
+```json worker-config.json
+{
+  "worker": {
+    "max_concurrent_actions": 4
+  }
+}
+```
+
+<Accordion title="Sizing guidelines">
+  **CPU-bound workloads** (compilation):
+  - 1 action per CPU core
+  - Example: 8-core machine → `max_concurrent_actions: 8`
+
+  **I/O-bound workloads** (tests, network calls):
+  - 2-4 actions per CPU core
+  - Example: 8-core machine → `max_concurrent_actions: 16-32`
+
+  **Mixed workloads**:
+  - Start with 1.5x CPU cores
+  - Monitor CPU and I/O wait
+  - Adjust based on utilization
+
+  **Memory-constrained**:
+  - Calculate per-action memory: `total_memory / max_concurrent_actions`
+  - Ensure sufficient memory for largest expected action
+</Accordion>
+
+### Platform Properties
+
+Optimize worker matching:
+
+```json
+{
+  "worker": {
+    "platform_properties": {
+      "cpu_count": "16",
+      "memory_gb": "32",
+      "os": "linux",
+      "cpu_arch": "x86_64",
+      "has_gpu": "true"
+    }
+  }
+}
+```
+
+Configure scheduler to use these properties:
+
+```json scheduler-config.json
+{
+  "schedulers": {
+    "main": {
+      "simple": {
+        "supported_platform_properties": {
+          "cpu_count": "minimum",
+          "memory_gb": "minimum",
+          "os": "exact",
+          "cpu_arch": "exact",
+          "has_gpu": "exact"
+        }
+      }
+    }
+  }
+}
+```
+
+<Accordion title="Property type strategies">
+  **`minimum`**: 
+  - Worker must have at least the requested value
+  - Used for: cpu_count, memory_gb, disk_gb
+  - Example: Action requests `cpu_count: 8`, worker with 16 cores matches
+
+  **`exact`**: 
+  - Worker must exactly match requested value
+  - Used for: os, cpu_arch, gpu_type
+  - Example: Action requests `os: linux`, only Linux workers match
+
+  **`priority`**: 
+  - Informational only, doesn't restrict matching
+  - Passed to worker but not enforced
+  - Future: May influence worker preference
+
+  **`ignore`**: 
+  - Allows property in actions
+  - Doesn't require workers to have it
+  - Used for optional capabilities
+</Accordion>
+
+## Network Optimization
+
+### gRPC Connection Pooling
+
+```json
+{
+  "stores": {
+    "REMOTE_CAS": {
+      "grpc": {
+        "instance_name": "main",
+        "endpoints": [
+          {"address": "grpc://cas-server-1:50051"},
+          {"address": "grpc://cas-server-2:50051"}
+        ],
+        "connections_per_endpoint": 5,
+        "rpc_timeout_s": "5m"
+      }
+    }
+  }
+}
+```
+
+<Accordion title="connections_per_endpoint">
+  Number of concurrent gRPC connections to each endpoint.
+
+  **Lower values** (1-2):
+  - Less memory overhead
+  - Fewer file descriptors
+  - May bottleneck on high throughput
+
+  **Higher values** (5-10):
+  - Better throughput for concurrent requests
+  - More resource usage
+  - Diminishing returns beyond 10
+
+  **Recommendation**: 5 for most cases, 10 for very high throughput
+</Accordion>
+
+<Accordion title="rpc_timeout_s">
+  Maximum time for RPC calls.
+
+  **Shorter timeouts** (30s-2m):
+  - Fail fast on network issues
+  - Better for small objects
+  - May fail for large uploads/downloads
+
+  **Longer timeouts** (5m-30m):
+  - Tolerates slow networks
+  - Required for large objects
+  - Slower to detect hung connections
+
+  **Recommendation**: 
+  - 5m for typical deployments
+  - 30m if transferring multi-GB objects
+  - Match to largest expected object transfer time
+</Accordion>
+
+### Retry Configuration
+
+```json
+{
+  "stores": {
+    "S3_CAS": {
+      "experimental_cloud_object_store": {
+        "provider": "aws",
+        "bucket": "nativelink-cache",
+        "retry": {
+          "max_retries": 6,
+          "delay": 0.3,
+          "jitter": 0.5
+        }
+      }
+    }
+  }
+}
+```
+
+<Info>
+- `max_retries`: Number of retry attempts (exponential backoff)
+- `delay`: Initial delay in seconds
+- `jitter`: Random factor (0.0-1.0) to prevent thundering herd
+
+Retry delay: `delay * (2 ^ attempt) * (1 + random(-jitter, jitter))`
+</Info>
+
+## Monitoring-Driven Optimization
+
+### Key Metrics to Track
+
+<CardGroup cols={2}>
+  <Card title="Cache Hit Rate" icon="bullseye">
+    ```promql
+    nativelink:cache_hit_rate
+    ```
+    **Target**: > 70% for AC, > 50% for CAS
+  </Card>
+
+  <Card title="Worker Utilization" icon="chart-line">
+    ```promql
+    nativelink:worker_utilization
+    ```
+    **Target**: 60-80% (allows burst capacity)
+  </Card>
+
+  <Card title="Queue Depth" icon="list">
+    ```promql
+    nativelink:queue_depth
+    ```
+    **Target**: < 10 sustained, < 50 peak
+  </Card>
+
+  <Card title="P95 Latency" icon="clock">
+    ```promql
+    nativelink:cache_operation_latency_p95
+    ```
+    **Target**: < 100ms for memory, < 1s for disk
+  </Card>
+</CardGroup>
+
+### Optimization Workflow
+
+<Steps>
+  <Step title="Identify bottleneck">
+    Check key metrics:
+    - High queue depth → Need more workers
+    - Low cache hit rate → Increase cache size or review keys
+    - High P95 latency → Use tiered storage or compression
+    - Low worker utilization → Reduce worker count or improve allocation
+  </Step>
+
+  <Step title="Make targeted change">
+    Apply one optimization at a time:
+    - Adjust configuration
+    - Monitor for 15-30 minutes
+    - Compare before/after metrics
+  </Step>
+
+  <Step title="Measure impact">
+    Use recording rules to track improvement:
+    ```promql
+    # Before/after comparison
+    nativelink:execution_success_rate
+    nativelink:cache_hit_rate
+    nativelink:worker_utilization
+    ```
+  </Step>
+
+  <Step title="Document and iterate">
+    Record successful optimizations and continue tuning.
+  </Step>
+</Steps>
+
+## Resource Limits
+
+### OpenTelemetry Collector
+
+```yaml otel-collector-config.yaml
+processors:
+  memory_limiter:
+    check_interval: 1s
+    limit_mib: 512
+    spike_limit_mib: 128
+
+  batch:
+    timeout: 10s
+    send_batch_size: 1024
+    send_batch_max_size: 2048
+```
+
+<Accordion title="Tuning guidelines">
+  **High throughput** (many workers, high QPS):
+  - `limit_mib: 1024+`
+  - `send_batch_size: 2048`
+  - `timeout: 5s`
+
+  **Low resource** (small deployments):
+  - `limit_mib: 256`
+  - `send_batch_size: 512`
+  - `timeout: 30s`
+
+  **Monitor**: `otelcol_processor_refused_metric_points` should be 0
+</Accordion>
+
+### Prometheus Storage
+
+```yaml prometheus-config.yaml
+storage:
+  tsdb:
+    retention.time: 30d
+    retention.size: 50GB
+    out_of_order_time_window: 30m
+```
+
+<Info>
+Estimate Prometheus storage: `samples/sec * retention_seconds * 1-2 bytes/sample`
+
+For 1000 series at 15s interval for 30 days: ~170 MB
+</Info>
+
+## Best Practices Summary
+
+<AccordionGroup>
+  <Accordion title="Cache Configuration">
+    - Use tiered storage (memory + disk) for best performance
+    - Size memory cache to 10-20% of working set
+    - Enable compression for remote stores
+    - Use deduplication for incremental builds
+  </Accordion>
+
+  <Accordion title="Scheduler Tuning">
+    - Set `worker_timeout_s` to 30s for production
+    - Use `most_recently_used` allocation for CI/CD
+    - Configure `max_action_executing_timeout_s` to catch hung actions
+    - Keep `max_job_retries` at 2-3
+  </Accordion>
+
+  <Accordion title="Worker Optimization">
+    - Match `max_concurrent_actions` to workload type
+    - Define precise platform properties
+    - Scale workers based on queue depth
+    - Monitor per-worker cache hit rates
+  </Accordion>
+
+  <Accordion title="Network Performance">
+    - Use 5 connections per gRPC endpoint
+    - Set appropriate RPC timeouts for object sizes
+    - Configure retries with jitter
+    - Enable compression for WAN transfers
+  </Accordion>
+</AccordionGroup>
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Metrics Reference" icon="chart-line" href="/operations/metrics">
+    Track optimization impact with metrics
+  </Card>
+  <Card title="Troubleshooting" icon="wrench" href="/operations/troubleshooting">
+    Debug performance issues
+  </Card>
+  <Card title="Monitoring Setup" icon="eye" href="/operations/monitoring">
+    Configure alerting for performance regressions
+  </Card>
+</CardGroup>

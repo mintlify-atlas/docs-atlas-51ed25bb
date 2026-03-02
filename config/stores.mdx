@@ -1,0 +1,496 @@
+---
+title: Store Configuration
+description: Store configuration reference for NativeLink
+---
+
+Stores handle data persistence in NativeLink. Each store has a unique name and type.
+
+## Store Definition
+
+<ParamField path="name" type="string" required>
+  Unique identifier for the store. Used to reference the store in other configuration sections.
+</ParamField>
+
+<ParamField path="<type>" type="object" required>
+  Store type and its configuration. Only one type can be specified per store.
+</ParamField>
+
+## Store Types
+
+<Tabs>
+  <Tab title="Memory">
+    In-memory hashmap store with optional eviction.
+    
+    ```json5
+    {
+      name: "MEMORY_STORE",
+      memory: {
+        eviction_policy: {
+          max_bytes: "1gb"
+        }
+      }
+    }
+    ```
+    
+    <ParamField path="eviction_policy" type="object">
+      Controls when items are evicted from the store.
+      
+      <Expandable title="properties">
+        <ParamField path="max_bytes" type="number" default="0">
+          Maximum bytes before eviction (0 = unlimited).
+        </ParamField>
+        <ParamField path="evict_bytes" type="number" default="0">
+          Bytes to evict below max_bytes to create low watermark.
+        </ParamField>
+        <ParamField path="max_seconds" type="number" default="0">
+          Maximum age in seconds (0 = no time-based eviction).
+        </ParamField>
+        <ParamField path="max_count" type="number" default="0">
+          Maximum number of items (0 = no count-based eviction).
+        </ParamField>
+      </Expandable>
+    </ParamField>
+  </Tab>
+  
+  <Tab title="Filesystem">
+    Persistent local filesystem store.
+    
+    ```json5
+    {
+      name: "FS_STORE",
+      filesystem: {
+        content_path: "/var/cache/nativelink/content",
+        temp_path: "/var/cache/nativelink/tmp",
+        eviction_policy: { max_bytes: "50gb" }
+      }
+    }
+    ```
+    
+    <ParamField path="content_path" type="string" required>
+      Directory for storing content. Scanned on startup.
+    </ParamField>
+    
+    <ParamField path="temp_path" type="string" required>
+      Temporary directory for uploads. Must be on same filesystem as content_path for atomic moves.
+    </ParamField>
+    
+    <ParamField path="eviction_policy" type="object">
+      Eviction policy (see Memory store).
+    </ParamField>
+    
+    <ParamField path="read_buffer_size" type="number" default="32768">
+      Buffer size for file reads (bytes).
+    </ParamField>
+    
+    <ParamField path="block_size" type="number" default="4096">
+      Filesystem block size for size calculations (bytes).
+    </ParamField>
+    
+    <ParamField path="max_concurrent_writes" type="number" default="0">
+      Limit concurrent writes to prevent I/O saturation (0 = unlimited).
+    </ParamField>
+  </Tab>
+  
+  <Tab title="S3">
+    AWS S3 cloud object storage.
+    
+    ```json5
+    {
+      name: "S3_STORE",
+      experimental_cloud_object_store: {
+        provider: "aws",
+        region: "us-east-1",
+        bucket: "my-bucket",
+        key_prefix: "nativelink/",
+        retry: {
+          max_retries: 6,
+          delay: 0.3,
+          jitter: 0.5
+        }
+      }
+    }
+    ```
+    
+    <ParamField path="provider" type="string" required>
+      Must be `"aws"`.
+    </ParamField>
+    
+    <ParamField path="region" type="string" required>
+      AWS region (e.g., `us-east-1`, `eu-west-1`).
+    </ParamField>
+    
+    <ParamField path="bucket" type="string" required>
+      S3 bucket name.
+    </ParamField>
+    
+    <ParamField path="key_prefix" type="string">
+      Optional prefix for all keys.
+    </ParamField>
+    
+    <ParamField path="retry" type="object">
+      Retry configuration.
+      
+      <Expandable title="properties">
+        <ParamField path="max_retries" type="number" default="0">
+          Maximum retry attempts (0 = unlimited).
+        </ParamField>
+        <ParamField path="delay" type="number" default="0">
+          Initial delay in seconds for exponential backoff.
+        </ParamField>
+        <ParamField path="jitter" type="number" default="0">
+          Jitter percentage (0-1) to add randomness.
+        </ParamField>
+      </Expandable>
+    </ParamField>
+    
+    <ParamField path="multipart_max_concurrent_uploads" type="number" default="10">
+      Concurrent multipart upload parts.
+    </ParamField>
+    
+    <ParamField path="max_retry_buffer_per_request" type="number" default="5242880">
+      Buffer size for retryable uploads (bytes). Set to 0 to disable buffering.
+    </ParamField>
+    
+    <ParamField path="consider_expired_after_s" type="number" default="0">
+      Treat objects older than this as expired (0 = never expire).
+    </ParamField>
+  </Tab>
+  
+  <Tab title="GCS">
+    Google Cloud Storage.
+    
+    ```json5
+    {
+      name: "GCS_STORE",
+      experimental_cloud_object_store: {
+        provider: "gcs",
+        bucket: "my-bucket",
+        key_prefix: "nativelink/"
+      }
+    }
+    ```
+    
+    <ParamField path="provider" type="string" required>
+      Must be `"gcs"`.
+    </ParamField>
+    
+    <ParamField path="bucket" type="string" required>
+      GCS bucket name.
+    </ParamField>
+    
+    <ParamField path="resumable_chunk_size" type="number" default="2097152">
+      Chunk size for resumable uploads (bytes).
+    </ParamField>
+    
+    <ParamField path="authentication_required" type="boolean" default="false">
+      Error if authentication is not found.
+    </ParamField>
+    
+    Common fields: `key_prefix`, `retry`, `multipart_max_concurrent_uploads`, `max_retry_buffer_per_request`, `consider_expired_after_s`
+  </Tab>
+  
+  <Tab title="Redis">
+    Redis key-value store.
+    
+    ```json5
+    {
+      name: "REDIS_STORE",
+      redis_store: {
+        addresses: ["redis://127.0.0.1:6379/"],
+        mode: "standard"
+      }
+    }
+    ```
+    
+    <ParamField path="addresses" type="array" required>
+      Redis server URLs. Format: `redis://[user:pass@]host:port/db`
+    </ParamField>
+    
+    <ParamField path="mode" type="enum" default="standard">
+      Redis mode.
+      
+      Options: `standard`, `cluster`, `sentinel`
+    </ParamField>
+    
+    <ParamField path="key_prefix" type="string" default="">
+      Prefix for all keys.
+    </ParamField>
+    
+    <ParamField path="command_timeout_ms" type="number" default="10000">
+      Command timeout (milliseconds).
+    </ParamField>
+    
+    <ParamField path="connection_timeout_ms" type="number" default="3000">
+      Connection timeout (milliseconds).
+    </ParamField>
+    
+    <ParamField path="read_chunk_size" type="number" default="65536">
+      Data read chunk size (bytes).
+    </ParamField>
+    
+    <ParamField path="connection_pool_size" type="number" default="3">
+      Number of connections to maintain.
+    </ParamField>
+  </Tab>
+  
+  <Tab title="GRPC">
+    Remote GRPC store proxy.
+    
+    ```json5
+    {
+      name: "REMOTE_STORE",
+      grpc: {
+        instance_name: "main",
+        endpoints: [
+          { address: "grpc://remote:50051" }
+        ],
+        store_type: "cas"
+      }
+    }
+    ```
+    
+    <ParamField path="instance_name" type="string" default="">
+      Instance name for GRPC calls.
+    </ParamField>
+    
+    <ParamField path="endpoints" type="array" required>
+      List of GRPC endpoints.
+      
+      <Expandable title="endpoint properties">
+        <ParamField path="address" type="string" required>
+          Endpoint URL (e.g., `grpc://host:port`).
+        </ParamField>
+        <ParamField path="concurrency_limit" type="number">
+          Maximum concurrent requests to this endpoint.
+        </ParamField>
+      </Expandable>
+    </ParamField>
+    
+    <ParamField path="store_type" type="enum" required>
+      Type of store.
+      
+      Options: `cas`, `ac`
+    </ParamField>
+    
+    <ParamField path="connections_per_endpoint" type="number" default="1">
+      TCP connections per endpoint for load balancing.
+    </ParamField>
+    
+    <ParamField path="max_concurrent_requests" type="number" default="0">
+      Global concurrent request limit (0 = unlimited).
+    </ParamField>
+  </Tab>
+  
+  <Tab title="Verify">
+    Validation wrapper for stores.
+    
+    ```json5
+    {
+      name: "VERIFIED_CAS",
+      verify: {
+        backend: { /* store config */ },
+        verify_size: true,
+        verify_hash: true
+      }
+    }
+    ```
+    
+    <ParamField path="backend" type="object" required>
+      Underlying store configuration.
+    </ParamField>
+    
+    <ParamField path="verify_size" type="boolean" default="false">
+      Verify blob size matches digest. Use `true` for CAS, `false` for AC.
+    </ParamField>
+    
+    <ParamField path="verify_hash" type="boolean" default="false">
+      Verify blob hash matches digest. Use `true` for CAS, `false` for AC.
+    </ParamField>
+  </Tab>
+  
+  <Tab title="FastSlow">
+    Two-tier caching store.
+    
+    ```json5
+    {
+      name: "CACHE_STORE",
+      fast_slow: {
+        fast: { memory: { eviction_policy: { max_bytes: "1gb" } } },
+        slow: { filesystem: { /* ... */ } }
+      }
+    }
+    ```
+    
+    <ParamField path="fast" type="object" required>
+      Fast store (cache layer).
+    </ParamField>
+    
+    <ParamField path="slow" type="object" required>
+      Slow store (backing storage).
+    </ParamField>
+    
+    <ParamField path="fast_direction" type="enum" default="both">
+      How fast store is used.
+      
+      Options: `both`, `update`, `get`, `read_only`
+    </ParamField>
+    
+    <ParamField path="slow_direction" type="enum" default="both">
+      How slow store is used.
+      
+      Options: `both`, `update`, `get`, `read_only`
+    </ParamField>
+  </Tab>
+  
+  <Tab title="Compression">
+    Transparent compression wrapper.
+    
+    ```json5
+    {
+      name: "COMPRESSED_STORE",
+      compression: {
+        backend: { /* store config */ },
+        compression_algorithm: {
+          lz4: { block_size: "64kb" }
+        }
+      }
+    }
+    ```
+    
+    <ParamField path="backend" type="object" required>
+      Underlying store.
+    </ParamField>
+    
+    <ParamField path="compression_algorithm" type="object" required>
+      Algorithm configuration.
+      
+      <Expandable title="lz4">
+        <ParamField path="block_size" type="number" default="65536">
+          Compression block size (bytes).
+        </ParamField>
+        <ParamField path="max_decode_block_size" type="number">
+          Maximum decode size for security (defaults to block_size).
+        </ParamField>
+      </Expandable>
+    </ParamField>
+  </Tab>
+  
+  <Tab title="Shard">
+    Distributes data across multiple stores.
+    
+    ```json5
+    {
+      name: "SHARDED_STORE",
+      shard: {
+        stores: [
+          { store: { /* config */ }, weight: 1 },
+          { store: { /* config */ }, weight: 2 }
+        ]
+      }
+    }
+    ```
+    
+    <ParamField path="stores" type="array" required>
+      List of stores with weights.
+      
+      <Expandable title="shard config">
+        <ParamField path="store" type="object" required>
+          Store configuration.
+        </ParamField>
+        <ParamField path="weight" type="number" default="1">
+          Distribution weight.
+        </ParamField>
+      </Expandable>
+    </ParamField>
+  </Tab>
+  
+  <Tab title="RefStore">
+    Reference to a named store.
+    
+    ```json5
+    {
+      name: "ALIAS_STORE",
+      ref_store: {
+        name: "ACTUAL_STORE"
+      }
+    }
+    ```
+    
+    <ParamField path="name" type="string" required>
+      Name of existing store to reference.
+    </ParamField>
+  </Tab>
+  
+  <Tab title="Noop">
+    Discards all data. Useful for testing or partitioning.
+    
+    ```json5
+    {
+      name: "DISCARD_STORE",
+      noop: {}
+    }
+    ```
+  </Tab>
+</Tabs>
+
+## Specialized Stores
+
+### Completeness Checking
+
+Verifies Action Cache results reference existing CAS objects.
+
+```json5
+{
+  name: "AC_STORE",
+  completeness_checking: {
+    backend: { /* AC store */ },
+    cas_store: { ref_store: { name: "CAS_STORE" } }
+  }
+}
+```
+
+### Existence Cache
+
+Caches `has()` calls for faster lookups.
+
+```json5
+{
+  name: "CACHED_STORE",
+  existence_cache: {
+    backend: { /* store config */ },
+    eviction_policy: { max_seconds: 100 }
+  }
+}
+```
+
+### Dedup Store
+
+Content-defined chunking for deduplication.
+
+```json5
+{
+  name: "DEDUP_STORE",
+  dedup: {
+    index_store: { /* small/fast store */ },
+    content_store: { /* large store */ },
+    min_size: "64kb",
+    normal_size: "256kb",
+    max_size: "512kb"
+  }
+}
+```
+
+### Size Partitioning
+
+Routes blobs by size.
+
+```json5
+{
+  name: "PARTITIONED_STORE",
+  size_partitioning: {
+    size: "128mb",
+    lower_store: { /* small blob store */ },
+    upper_store: { /* large blob store */ }
+  }
+}
+```

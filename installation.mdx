@@ -1,0 +1,436 @@
+---
+title: "Installation"
+description: "Install NativeLink using Docker, Nix, or build from source with Cargo"
+---
+
+## Installation methods
+
+NativeLink can be installed using several methods depending on your platform and preferences. Choose the method that best fits your environment:
+
+<CardGroup cols={3}>
+  <Card title="Docker" icon="docker">
+    Fast to spin up, works on Linux (x86_64), Windows, and macOS
+  </Card>
+  
+  <Card title="Nix" icon="snowflake">
+    Built from source, supports Linux, macOS, and WSL2
+  </Card>
+  
+  <Card title="Cargo" icon="rust">
+    Build from source using Rust's package manager
+  </Card>
+</CardGroup>
+
+## Docker installation
+
+The fastest way to get started with NativeLink is using the prebuilt Docker images.
+
+<Note>
+Prebuilt images are currently limited to x86_64 systems. For other architectures, use Nix or build from source.
+</Note>
+
+### Linux and macOS
+
+<Steps>
+  <Step title="Download the configuration file">
+    ```bash
+    curl -O \
+      https://raw.githubusercontent.com/TraceMachina/nativelink/v0.7.5/nativelink-config/examples/basic_cas.json5
+    ```
+  </Step>
+
+  <Step title="Run the Docker container">
+    ```bash
+    # See https://github.com/TraceMachina/nativelink/pkgs/container/nativelink
+    # to find the latest tag
+    docker run \
+      -v $(pwd)/basic_cas.json5:/config \
+      -p 50051:50051 \
+      ghcr.io/tracemachina/nativelink:v0.7.5 \
+      config
+    ```
+  </Step>
+</Steps>
+
+### Windows
+
+<Steps>
+  <Step title="Download the configuration file">
+    ```powershell
+    Invoke-WebRequest `
+      -Uri "https://raw.githubusercontent.com/TraceMachina/nativelink/v0.7.5/nativelink-config/examples/basic_cas.json5" `
+      -OutFile "basic_cas.json5"
+    ```
+  </Step>
+
+  <Step title="Run the Docker container">
+    ```powershell
+    docker run `
+      -v ${PWD}/basic_cas.json5:/config `
+      -p 50051:50051 `
+      ghcr.io/tracemachina/nativelink:v0.7.5 `
+      config
+    ```
+    
+    <Note>
+    Adjust the path if you're not running the command from the directory containing `basic_cas.json5`.
+    </Note>
+  </Step>
+</Steps>
+
+### Docker Compose
+
+For more complex deployments with multiple services, use Docker Compose:
+
+<Steps>
+  <Step title="Clone the repository">
+    ```bash
+    git clone https://github.com/TraceMachina/nativelink.git
+    cd nativelink/deployment-examples/docker-compose
+    ```
+  </Step>
+
+  <Step title="Start the services">
+    ```bash
+    docker-compose up
+    ```
+
+    This starts:
+    - NativeLink CAS server (port 50051)
+    - NativeLink scheduler (port 50052)
+    - NativeLink executor worker
+  </Step>
+
+  <Step title="Verify the deployment">
+    ```bash
+    # Check CAS endpoint
+    curl http://localhost:50051/status
+    
+    # Check scheduler endpoint
+    curl http://localhost:50052/status
+    ```
+  </Step>
+</Steps>
+
+<Warning>
+The Docker Compose setup is designed for development and testing. For production deployments, see the [Kubernetes deployment guide](/deployment/kubernetes).
+</Warning>
+
+## Nix installation
+
+Nix provides a reproducible build environment and works on Linux, macOS, and WSL2.
+
+<Note>
+Executables built for macOS are dynamically linked against libraries from Nix and won't work on systems that don't have these libraries present.
+</Note>
+
+### Prerequisites
+
+<Steps>
+  <Step title="Install Nix">
+    Install Nix using the next-generation installer with flake support:
+
+    ```bash
+    curl --proto '=https' --tlsv1.2 -sSf -L https://install.determinate.systems/nix | sh -s -- install
+    ```
+
+    For alternative installation methods, see the [Nix installation guide](https://github.com/NixOS/experimental-nix-installer).
+  </Step>
+
+  <Step title="Verify Nix installation">
+    ```bash
+    nix --version
+    ```
+
+    Ensure your Nix version supports flakes (Nix 2.4 or later).
+  </Step>
+</Steps>
+
+### Run NativeLink with Nix
+
+<Steps>
+  <Step title="Download the configuration file">
+    ```bash
+    curl -O \
+      https://raw.githubusercontent.com/TraceMachina/nativelink/main/nativelink-config/examples/basic_cas.json5
+    ```
+  </Step>
+
+  <Step title="Run NativeLink">
+    ```bash
+    nix run github:TraceMachina/nativelink ./basic_cas.json5
+    ```
+
+    This command:
+    1. Downloads the NativeLink source from GitHub
+    2. Builds NativeLink from source
+    3. Runs it with your configuration file
+
+    <Note>
+    The first run will take longer as Nix builds NativeLink from source. Subsequent runs will use the cached build.
+    </Note>
+  </Step>
+</Steps>
+
+### Install NativeLink with Nix
+
+To install NativeLink permanently in your Nix profile:
+
+```bash
+nix profile install github:TraceMachina/nativelink
+```
+
+Then run it directly:
+
+```bash
+nativelink ./basic_cas.json5
+```
+
+### Using Nix flakes in your project
+
+Add NativeLink to your `flake.nix`:
+
+```nix
+{
+  inputs = {
+    nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
+    nativelink.url = "github:TraceMachina/nativelink";
+  };
+
+  outputs = { self, nixpkgs, nativelink }: {
+    # Use nativelink in your development shell
+    devShells.x86_64-linux.default = nixpkgs.legacyPackages.x86_64-linux.mkShell {
+      buildInputs = [
+        nativelink.packages.x86_64-linux.default
+      ];
+    };
+  };
+}
+```
+
+## Build from source with Cargo
+
+Build NativeLink from source using Rust's Cargo package manager.
+
+### Prerequisites
+
+<Steps>
+  <Step title="Install Rust">
+    Install Rust using rustup:
+
+    ```bash
+    curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+    ```
+
+    NativeLink requires Rust **1.87.0** or later.
+  </Step>
+
+  <Step title="Verify Rust installation">
+    ```bash
+    rustc --version
+    cargo --version
+    ```
+  </Step>
+
+  <Step title="Install system dependencies">
+    Install required system dependencies:
+
+    <CodeGroup>
+      ```bash Ubuntu/Debian
+      sudo apt-get update
+      sudo apt-get install -y \
+        build-essential \
+        pkg-config \
+        libssl-dev
+      ```
+
+      ```bash Fedora/RHEL
+      sudo dnf install -y \
+        gcc \
+        pkg-config \
+        openssl-devel
+      ```
+
+      ```bash macOS
+      # Install Xcode Command Line Tools
+      xcode-select --install
+      ```
+    </CodeGroup>
+  </Step>
+</Steps>
+
+### Build NativeLink
+
+<Steps>
+  <Step title="Clone the repository">
+    ```bash
+    git clone https://github.com/TraceMachina/nativelink.git
+    cd nativelink
+    ```
+  </Step>
+
+  <Step title="Build NativeLink">
+    Build the release version:
+
+    ```bash
+    cargo build --release
+    ```
+
+    The binary will be located at `target/release/nativelink`.
+
+    <Note>
+    The release build enables optimizations including LTO (Link Time Optimization) for maximum performance. This may take 10-20 minutes depending on your system.
+    </Note>
+  </Step>
+
+  <Step title="Run NativeLink">
+    ```bash
+    ./target/release/nativelink ./nativelink-config/examples/basic_cas.json5
+    ```
+  </Step>
+
+  <Step title="Optional: Install system-wide">
+    Install the binary to your system:
+
+    ```bash
+    cargo install --path .
+    ```
+
+    Then run from anywhere:
+
+    ```bash
+    nativelink ./basic_cas.json5
+    ```
+  </Step>
+</Steps>
+
+### Development builds
+
+For development and testing, use a development build:
+
+```bash
+# Standard debug build
+cargo build
+
+# Run tests
+cargo test --all
+
+# Small optimized build for CI (reduces target/ size from ~12GB to ~1GB)
+cargo build --profile=smol
+```
+
+### Build with Bazel
+
+NativeLink can also be built using Bazel:
+
+```bash
+# Build NativeLink
+bazel build //src/bin/nativelink
+
+# Run NativeLink
+bazel run //src/bin/nativelink -- ./nativelink-config/examples/basic_cas.json5
+
+# Run tests
+bazel test //...
+```
+
+For more details on building with Bazel, see the [Bazel build guide](/contributing/bazel).
+
+## Verify your installation
+
+Regardless of installation method, verify that NativeLink is working correctly:
+
+<Steps>
+  <Step title="Check the version">
+    ```bash
+    nativelink --version
+    ```
+
+    Expected output:
+    ```
+    nativelink 1.0.0-rc2
+    ```
+  </Step>
+
+  <Step title="View help information">
+    ```bash
+    nativelink --help
+    ```
+
+    This displays:
+    - Available command-line options
+    - Usage information
+    - Configuration file requirements
+  </Step>
+
+  <Step title="Start with a test configuration">
+    ```bash
+    nativelink ./basic_cas.json5
+    ```
+
+    Look for:
+    ```
+    Ready, listening on 0.0.0.0:50051
+    ```
+  </Step>
+
+  <Step title="Test the health endpoint">
+    In another terminal:
+
+    ```bash
+    curl http://localhost:50051/status
+    ```
+
+    A successful response indicates NativeLink is running correctly.
+  </Step>
+</Steps>
+
+## Container registry
+
+Prebuilt Docker images are available in the GitHub Container Registry:
+
+- **Registry**: `ghcr.io/tracemachina/nativelink`
+- **Tags**: See [available tags](https://github.com/TraceMachina/nativelink/pkgs/container/nativelink)
+- **Supported platforms**: linux/amd64 (x86_64)
+
+### Image variants
+
+- `v0.7.5` - Specific version release
+- `latest` - Latest stable release
+- `main` - Built from the main branch (development)
+
+### Build your own image
+
+To build a custom Docker image:
+
+```bash
+# Clone the repository
+git clone https://github.com/TraceMachina/nativelink.git
+cd nativelink
+
+# Build the image
+docker build -f deployment-examples/docker-compose/Dockerfile -t nativelink:custom .
+
+# Run your custom image
+docker run -v $(pwd)/basic_cas.json5:/config -p 50051:50051 nativelink:custom config
+```
+
+## Next steps
+
+<CardGroup cols={2}>
+  <Card title="Configuration" icon="gear" href="/config/overview">
+    Learn how to configure NativeLink for your use case.
+  </Card>
+
+  <Card title="Integration" icon="link" href="/integration/bazel">
+    Connect your build tools to NativeLink.
+  </Card>
+
+  <Card title="Deployment" icon="rocket" href="/deployment/kubernetes">
+    Deploy NativeLink to production.
+  </Card>
+
+  <Card title="Contributing" icon="code-branch" href="/contributing/overview">
+    Contribute to NativeLink development.
+  </Card>
+</CardGroup>

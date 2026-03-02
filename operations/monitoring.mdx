@@ -1,0 +1,451 @@
+---
+title: Monitoring and Observability
+description: Set up comprehensive monitoring for NativeLink using OpenTelemetry, Prometheus, and Grafana
+---
+
+NativeLink exposes comprehensive metrics about cache operations and remote execution through OpenTelemetry (OTEL). This guide covers setting up monitoring infrastructure to track system health, performance, and reliability.
+
+## Overview
+
+NativeLink provides insights into:
+
+- **Cache Performance**: Hit rates, operation latencies, eviction rates
+- **Execution Pipeline**: Queue times, stage durations, success rates
+- **System Health**: Worker utilization, throughput, error rates
+
+## Quick Start with Docker Compose
+
+<Steps>
+  <Step title="Start the metrics stack">
+    ```bash
+    cd deployment-examples/metrics
+    docker-compose up -d
+    ```
+
+    This starts:
+    - OpenTelemetry Collector (ports 4317, 4318)
+    - Prometheus (port 9091)
+    - Grafana (port 3000)
+    - AlertManager (port 9093)
+  </Step>
+
+  <Step title="Configure NativeLink">
+    Set environment variables to send metrics to the collector:
+
+    ```bash
+    export OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4317
+    export OTEL_EXPORTER_OTLP_PROTOCOL=grpc
+    export OTEL_SERVICE_NAME=nativelink
+    export OTEL_RESOURCE_ATTRIBUTES="deployment.environment=dev,nativelink.instance_name=main"
+    ```
+  </Step>
+
+  <Step title="Start NativeLink">
+    ```bash
+    nativelink /path/to/config.json
+    ```
+  </Step>
+
+  <Step title="Access metrics dashboards">
+    - **Prometheus UI**: http://localhost:9091
+    - **Grafana**: http://localhost:3000 (admin/admin)
+    - **OTEL Collector health**: http://localhost:13133/health
+    - **Collector metrics**: http://localhost:8888/metrics
+  </Step>
+</Steps>
+
+## Kubernetes Deployment
+
+### Deploy OTEL Collector
+
+```bash
+kubectl apply -f deployment-examples/metrics/kubernetes/otel-collector.yaml
+```
+
+### Deploy Prometheus
+
+```bash
+kubectl apply -f deployment-examples/metrics/kubernetes/prometheus.yaml
+```
+
+### Configure NativeLink Deployment
+
+Add environment variables to your NativeLink deployment:
+
+```yaml
+env:
+  - name: OTEL_EXPORTER_OTLP_ENDPOINT
+    value: "http://otel-collector:4317"
+  - name: OTEL_EXPORTER_OTLP_PROTOCOL
+    value: "grpc"
+  - name: OTEL_RESOURCE_ATTRIBUTES
+    value: "deployment.environment=prod,k8s.cluster.name=main"
+```
+
+## Environment Variables
+
+### OTLP Exporter Configuration
+
+```bash
+# Collector endpoint
+OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4317
+
+# Protocol (grpc or http/protobuf)
+OTEL_EXPORTER_OTLP_PROTOCOL=grpc
+
+# Optional authentication headers
+OTEL_EXPORTER_OTLP_HEADERS="Authorization=Bearer token"
+
+# Compression (none, gzip)
+OTEL_EXPORTER_OTLP_COMPRESSION=gzip
+```
+
+### Resource Attributes
+
+```bash
+# Service name (fixed)
+OTEL_SERVICE_NAME=nativelink
+
+# Custom attributes for filtering and grouping
+OTEL_RESOURCE_ATTRIBUTES="key1=value1,key2=value2"
+```
+
+<Note>
+Recommended resource attributes:
+- `deployment.environment` - Environment name (dev, staging, prod)
+- `nativelink.instance_name` - Instance identifier
+- `k8s.cluster.name` - Kubernetes cluster name
+- `cloud.region` - Cloud provider region
+</Note>
+
+### Metric Export Configuration
+
+```bash
+# Export interval in milliseconds (default: 60s)
+OTEL_METRIC_EXPORT_INTERVAL=60000
+
+# Export timeout in milliseconds (default: 30s)
+OTEL_METRIC_EXPORT_TIMEOUT=30000
+
+# Disable traces if only metrics needed
+OTEL_TRACES_EXPORTER=none
+
+# Disable logs if only metrics needed
+OTEL_LOGS_EXPORTER=none
+```
+
+## Metrics Server Options
+
+### Prometheus (Recommended)
+
+Prometheus offers native OTLP support and excellent query capabilities.
+
+#### Direct OTLP Ingestion
+
+```bash
+prometheus --web.enable-otlp-receiver \
+          --storage.tsdb.out-of-order-time-window=30m
+```
+
+#### Via Collector Scraping
+
+Configure Prometheus to scrape the OTEL Collector:
+
+```yaml prometheus-config.yaml
+scrape_configs:
+  - job_name: 'otel-collector'
+    static_configs:
+      - targets: ['otel-collector:9090']
+```
+
+### Grafana Cloud
+
+For managed metrics:
+
+```yaml otel-collector-config.yaml
+exporters:
+  otlphttp:
+    endpoint: https://otlp-gateway-prod-us-central-0.grafana.net/otlp
+    headers:
+      Authorization: "Bearer ${GRAFANA_CLOUD_TOKEN}"
+```
+
+### ClickHouse
+
+For high-volume metrics storage:
+
+```yaml otel-collector-config.yaml
+exporters:
+  clickhouse:
+    endpoint: tcp://clickhouse:9000
+    database: metrics
+    ttl_days: 30
+    metrics_table: otel_metrics
+```
+
+## Grafana Dashboards
+
+### Import Pre-built Dashboard
+
+NativeLink includes a comprehensive Grafana dashboard:
+
+```bash
+# Import via API
+curl -X POST http://admin:admin@localhost:3000/api/dashboards/db \
+  -H "Content-Type: application/json" \
+  -d @deployment-examples/metrics/grafana/dashboards/nativelink-overview.json
+```
+
+Or import via the Grafana UI at http://localhost:3000
+
+### Key Dashboard Panels
+
+The included dashboard provides:
+
+<CardGroup cols={2}>
+  <Card title="Execution Pipeline" icon="diagram-project">
+    - Queue depth over time
+    - Stage duration percentiles
+    - Success/failure rates
+    - Active actions by stage
+  </Card>
+
+  <Card title="Cache Performance" icon="database">
+    - Hit/miss rates by cache type
+    - Operation latency distributions
+    - Eviction rates
+    - Cache size utilization
+  </Card>
+
+  <Card title="Worker Metrics" icon="server">
+    - Worker utilization heatmap
+    - Actions per worker
+    - Worker timeout events
+  </Card>
+
+  <Card title="Error Tracking" icon="triangle-exclamation">
+    - Error rates by type
+    - Failed execution breakdown
+    - Retry counts
+  </Card>
+</CardGroup>
+
+## Example Queries
+
+### Cache Hit Rate
+
+```promql
+sum(rate(nativelink_cache_operations_total{cache_operation_result="hit"}[5m])) by (cache_type) /
+sum(rate(nativelink_cache_operations_total{cache_operation_name="read"}[5m])) by (cache_type)
+```
+
+### Execution Success Rate
+
+```promql
+sum(rate(nativelink_execution_completed_count_total{execution_result="success"}[5m])) /
+sum(rate(nativelink_execution_completed_count_total[5m]))
+```
+
+### Queue Depth by Priority
+
+```promql
+sum(nativelink_execution_active_count{execution_stage="queued"}) by (execution_priority)
+```
+
+### P95 Cache Operation Latency
+
+```promql
+histogram_quantile(0.95,
+  sum(rate(nativelink_cache_operation_duration_bucket[5m])) by (le, cache_type)
+)
+```
+
+### Worker Utilization
+
+```promql
+count(nativelink_execution_active_count{execution_stage="executing"} > 0) /
+count(count by (execution_worker_id) (nativelink_execution_active_count))
+```
+
+## Joining with Resource Attributes
+
+Use `target_info` to join metrics with resource attributes:
+
+```promql
+rate(nativelink_execution_completed_count_total[5m])
+* on (job, instance) group_left (k8s_cluster_name, deployment_environment)
+target_info
+```
+
+## Alerting
+
+See the [Troubleshooting](/operations/troubleshooting) page for alert rule examples.
+
+## Health Check Endpoint
+
+NativeLink exposes a health check endpoint that aggregates component health status.
+
+### Endpoint Details
+
+- **Path**: Configured via `health_status_config.path` in your server configuration
+- **Method**: GET
+- **Response Format**: JSON
+- **Response Codes**:
+  - `200 OK`: All components healthy
+  - `503 Service Unavailable`: One or more components failed or timed out
+
+### Configuration
+
+```json nativelink-config.json
+{
+  "servers": [
+    {
+      "listener": {
+        "http": {
+          "socket_address": "0.0.0.0:50051"
+        }
+      },
+      "services": {
+        "health_status": {
+          "path": "/status",
+          "timeout_seconds": 5
+        }
+      }
+    }
+  ]
+}
+```
+
+<Info>
+The default timeout is 5 seconds if not specified. Components that don't respond within this timeout are marked as timed out.
+</Info>
+
+### Example Response
+
+```json
+[
+  {
+    "namespace": "/stores/CAS_MAIN_STORE",
+    "status": {
+      "Ok": {
+        "struct_name": "nativelink_store::filesystem_store::FilesystemStore",
+        "message": "Healthy"
+      }
+    }
+  },
+  {
+    "namespace": "/schedulers/main",
+    "status": {
+      "Ok": {
+        "struct_name": "nativelink_scheduler::simple_scheduler::SimpleScheduler",
+        "message": "3 workers connected"
+      }
+    }
+  }
+]
+```
+
+### Health Status Types
+
+<Accordion title="Ok">
+  Component is functioning normally.
+
+  ```json
+  {
+    "Ok": {
+      "struct_name": "component_type",
+      "message": "descriptive message"
+    }
+  }
+  ```
+</Accordion>
+
+<Accordion title="Initializing">
+  Component is starting up and not yet ready.
+
+  ```json
+  {
+    "Initializing": {
+      "struct_name": "component_type",
+      "message": "connecting to backend"
+    }
+  }
+  ```
+</Accordion>
+
+<Accordion title="Warning">
+  Component has non-fatal issues but is operational.
+
+  ```json
+  {
+    "Warning": {
+      "struct_name": "component_type",
+      "message": "high latency detected"
+    }
+  }
+  ```
+</Accordion>
+
+<Accordion title="Failed">
+  Component is not functioning. Results in 503 response.
+
+  ```json
+  {
+    "Failed": {
+      "struct_name": "component_type",
+      "message": "connection refused"
+    }
+  }
+  ```
+</Accordion>
+
+<Accordion title="Timeout">
+  Component didn't respond within the configured timeout. Results in 503 response.
+
+  ```json
+  {
+    "Timeout": {
+      "struct_name": "component_type"
+    }
+  }
+  ```
+</Accordion>
+
+### Using Health Checks
+
+#### Kubernetes Liveness Probe
+
+```yaml
+livenessProbe:
+  httpGet:
+    path: /status
+    port: 50051
+  initialDelaySeconds: 30
+  periodSeconds: 10
+  timeoutSeconds: 5
+  failureThreshold: 3
+```
+
+#### Load Balancer Health Check
+
+```bash
+curl http://nativelink:50051/status
+```
+
+<Warning>
+The health check endpoint returns 503 if ANY component reports Failed or Timeout status. Ensure your health check thresholds account for temporary issues during rolling updates.
+</Warning>
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Metrics Reference" icon="chart-line" href="/operations/metrics">
+    Complete list of available metrics
+  </Card>
+  <Card title="Troubleshooting" icon="wrench" href="/operations/troubleshooting">
+    Common issues and solutions
+  </Card>
+  <Card title="Performance Tuning" icon="gauge-high" href="/operations/performance-tuning">
+    Optimize your deployment
+  </Card>
+</CardGroup>

@@ -1,0 +1,555 @@
+---
+title: TLS Configuration
+description: Configure TLS/SSL encryption for secure communication in NativeLink
+---
+
+NativeLink supports TLS/SSL encryption for all gRPC and HTTP/2 communication. This page covers server and client TLS configuration.
+
+## Server TLS Configuration
+
+Enable TLS on NativeLink servers to encrypt traffic and authenticate the server to clients.
+
+### Basic TLS Setup
+
+Configure TLS in the HTTP listener section:
+
+```json5
+{
+  servers: [
+    {
+      listener: {
+        http: {
+          socket_address: "0.0.0.0:50051",
+          tls: {
+            cert_file: "/path/to/server-cert.pem",
+            key_file: "/path/to/server-key.pem"
+          }
+        }
+      },
+      services: {
+        // ... service configuration
+      }
+    }
+  ]
+}
+```
+
+### TLS Configuration Parameters
+
+- **`cert_file`** (required): Path to the server certificate file
+  - Must be in PEM format
+  - Can include the full certificate chain
+  - Example: `/etc/nativelink/certs/server.pem`
+
+- **`key_file`** (required): Path to the server private key file
+  - Must be in PEM format
+  - Supports PKCS8, PKCS1, and SEC1 key formats
+  - Must contain exactly one private key
+  - Example: `/etc/nativelink/certs/server-key.pem`
+
+<Warning>
+The server will fail to start if:
+- Certificate or key files cannot be read
+- The key file contains zero or multiple keys
+- The certificate and key do not match
+- File permissions prevent NativeLink from reading the files
+</Warning>
+
+### Supported Key Formats
+
+NativeLink automatically detects and supports multiple private key formats:
+
+- **PKCS#8** (preferred): Modern format, starts with `-----BEGIN PRIVATE KEY-----`
+- **PKCS#1**: RSA-specific format, starts with `-----BEGIN RSA PRIVATE KEY-----`
+- **SEC1**: EC-specific format, starts with `-----BEGIN EC PRIVATE KEY-----`
+
+<Note>
+NativeLink uses `rustls` for TLS, which automatically negotiates HTTP/2 via ALPN (Application-Layer Protocol Negotiation).
+</Note>
+
+## Certificate Setup
+
+### Generating Self-Signed Certificates (Development)
+
+For development and testing environments:
+
+<Steps>
+  <Step title="Generate private key">
+    ```bash
+    openssl genrsa -out server-key.pem 2048
+    ```
+  </Step>
+  <Step title="Create certificate signing request">
+    ```bash
+    openssl req -new -key server-key.pem -out server.csr \
+      -subj "/CN=localhost"
+    ```
+  </Step>
+  <Step title="Generate self-signed certificate">
+    ```bash
+    openssl x509 -req -days 365 -in server.csr \
+      -signkey server-key.pem -out server-cert.pem
+    ```
+  </Step>
+  <Step title="Secure the private key">
+    ```bash
+    chmod 600 server-key.pem
+    chown nativelink:nativelink server-key.pem
+    ```
+  </Step>
+</Steps>
+
+<Warning>
+Self-signed certificates should **never** be used in production. Use certificates from a trusted Certificate Authority (CA) instead.
+</Warning>
+
+### Production Certificates
+
+For production environments, obtain certificates from a trusted CA:
+
+**Option 1: Let's Encrypt (Free)**
+
+```bash
+# Using certbot
+sudo certbot certonly --standalone -d your-domain.com
+
+# Certificates will be in:
+# /etc/letsencrypt/live/your-domain.com/fullchain.pem (cert_file)
+# /etc/letsencrypt/live/your-domain.com/privkey.pem (key_file)
+```
+
+**Option 2: Commercial CA**
+
+1. Generate a CSR (Certificate Signing Request)
+2. Submit the CSR to your CA
+3. Download the signed certificate and intermediate certificates
+4. Combine them into a full chain PEM file
+
+**Option 3: Internal PKI**
+
+For organizations with internal PKI infrastructure:
+
+```bash
+# Generate key
+openssl genrsa -out server-key.pem 2048
+
+# Create CSR
+openssl req -new -key server-key.pem -out server.csr \
+  -subj "/CN=nativelink.example.com/O=YourOrg/C=US"
+
+# Sign with your internal CA
+openssl x509 -req -in server.csr -CA ca.pem -CAkey ca-key.pem \
+  -CAcreateserial -out server-cert.pem -days 365
+```
+
+### Certificate Chain
+
+For proper TLS validation, include the full certificate chain in `cert_file`:
+
+```bash
+cat server-cert.pem intermediate-ca.pem root-ca.pem > fullchain.pem
+```
+
+Configuration:
+
+```json5
+{
+  tls: {
+    cert_file: "/path/to/fullchain.pem",
+    key_file: "/path/to/server-key.pem"
+  }
+}
+```
+
+## Client TLS Configuration
+
+Configure clients (workers, GRPC stores) to connect to TLS-enabled servers.
+
+### Worker Configuration
+
+```json5
+{
+  workers: [
+    {
+      local: {
+        worker_api_endpoint: {
+          uri: "grpcs://scheduler.example.com:50061",  // Note: grpcs:// scheme
+          tls_config: {
+            ca_file: "/path/to/ca-cert.pem"
+          }
+        },
+        // ... other configuration
+      }
+    }
+  ]
+}
+```
+
+### GRPC Store Configuration
+
+```json5
+{
+  stores: [
+    {
+      name: "remote_cas",
+      grpc: {
+        instance_name: "main",
+        endpoints: [
+          {
+            address: "grpcs://cas-server.example.com:50051",
+            tls_config: {
+              ca_file: "/path/to/ca-cert.pem"
+            },
+            connect_timeout_s: 30,
+            tcp_keepalive_s: 30
+          }
+        ],
+        store_type: "cas"
+      }
+    }
+  ]
+}
+```
+
+### URI Schemes
+
+- **`grpc://`** - Unencrypted connection (not recommended for production)
+- **`grpcs://`** - TLS-encrypted connection (recommended)
+- **`https://`** - Also supported for TLS connections
+
+<Note>
+NativeLink internally converts `grpcs://` to `https://` for tonic transport compatibility.
+</Note>
+
+### Using System Root Certificates
+
+For servers with certificates from public CAs:
+
+```json5
+{
+  tls_config: {
+    use_native_roots: true
+  }
+}
+```
+
+This uses the operating system's trusted root certificate store, eliminating the need to specify `ca_file`.
+
+<Warning>
+When `use_native_roots: true` is set, any configured `ca_file` will be ignored. A warning will be logged if both are specified.
+</Warning>
+
+## Mutual TLS (mTLS)
+
+Mutual TLS provides two-way authentication where both server and client verify each other's certificates.
+
+### Server Configuration
+
+```json5
+{
+  servers: [
+    {
+      listener: {
+        http: {
+          socket_address: "0.0.0.0:50061",
+          tls: {
+            cert_file: "/path/to/server-cert.pem",
+            key_file: "/path/to/server-key.pem",
+            client_ca_file: "/path/to/client-ca.pem",
+            client_crl_file: "/path/to/client-crl.pem"  // Optional
+          }
+        }
+      },
+      services: {
+        worker_api: { scheduler: "main" }
+      }
+    }
+  ]
+}
+```
+
+### Client Configuration
+
+```json5
+{
+  worker_api_endpoint: {
+    uri: "grpcs://scheduler.example.com:50061",
+    tls_config: {
+      ca_file: "/path/to/server-ca.pem",
+      cert_file: "/path/to/client-cert.pem",
+      key_file: "/path/to/client-key.pem"
+    }
+  }
+}
+```
+
+### mTLS Certificate Setup
+
+<Steps>
+  <Step title="Create CA for client certificates">
+    ```bash
+    # Generate CA private key
+    openssl genrsa -out client-ca-key.pem 4096
+    
+    # Create CA certificate
+    openssl req -new -x509 -days 3650 -key client-ca-key.pem \
+      -out client-ca.pem -subj "/CN=NativeLink Client CA/O=YourOrg"
+    ```
+  </Step>
+  <Step title="Generate client certificates">
+    ```bash
+    # Generate client private key
+    openssl genrsa -out client-key.pem 2048
+    
+    # Create client CSR
+    openssl req -new -key client-key.pem -out client.csr \
+      -subj "/CN=worker-01/O=YourOrg"
+    
+    # Sign with CA
+    openssl x509 -req -in client.csr -CA client-ca.pem \
+      -CAkey client-ca-key.pem -CAcreateserial \
+      -out client-cert.pem -days 365
+    ```
+  </Step>
+  <Step title="Distribute certificates">
+    - Place `client-ca.pem` on the server (for `client_ca_file`)
+    - Place `client-cert.pem` and `client-key.pem` on workers
+    - Secure all private keys with appropriate file permissions
+  </Step>
+</Steps>
+
+## Certificate Revocation
+
+Use Certificate Revocation Lists (CRLs) to block compromised client certificates.
+
+### Creating a CRL
+
+```bash
+# Create CRL configuration file (crl.conf)
+cat > crl.conf << EOF
+[ca]
+default_ca = CA_default
+
+[CA_default]
+database = index.txt
+crl = crl.pem
+default_crl_days = 30
+EOF
+
+# Initialize the database
+touch index.txt
+echo 01 > crlnumber
+
+# Revoke a certificate
+openssl ca -config crl.conf -revoke client-cert.pem \
+  -keyfile client-ca-key.pem -cert client-ca.pem
+
+# Generate CRL
+openssl ca -config crl.conf -gencrl -out client-crl.pem \
+  -keyfile client-ca-key.pem -cert client-ca.pem
+```
+
+### Using CRLs
+
+Configure the server to check the CRL:
+
+```json5
+{
+  tls: {
+    cert_file: "/path/to/server-cert.pem",
+    key_file: "/path/to/server-key.pem",
+    client_ca_file: "/path/to/client-ca.pem",
+    client_crl_file: "/path/to/client-crl.pem"  // Blocks revoked certs
+  }
+}
+```
+
+<Note>
+Update and redeploy the CRL file when revoking certificates. NativeLink reads the CRL at startup.
+</Note>
+
+## Advanced HTTP/2 Configuration
+
+Fine-tune HTTP/2 settings for TLS connections:
+
+```json5
+{
+  listener: {
+    http: {
+      socket_address: "0.0.0.0:50051",
+      tls: {
+        cert_file: "/path/to/cert.pem",
+        key_file: "/path/to/key.pem"
+      },
+      advanced_http: {
+        http2_keep_alive_interval: 30,
+        experimental_http2_keep_alive_timeout: 20,
+        experimental_http2_max_concurrent_streams: 100,
+        experimental_http2_initial_stream_window_size: 65535,
+        experimental_http2_initial_connection_window_size: 1048576
+      }
+    }
+  }
+}
+```
+
+See the [HTTP Configuration](/configuration/http-settings) page for detailed parameter descriptions.
+
+## Security Best Practices
+
+- **Use strong key sizes**: Minimum 2048-bit RSA or 256-bit ECDSA
+- **Enable TLS everywhere**: Never transmit sensitive data over unencrypted connections
+- **Rotate certificates regularly**: Automate certificate renewal (e.g., every 90 days)
+- **Secure private keys**: 
+  - Set file permissions to `600` or `400`
+  - Store keys on encrypted volumes
+  - Never commit keys to version control
+- **Use mTLS for Worker API**: Always require client certificates for worker connections
+- **Monitor certificate expiration**: Set up alerts before certificates expire
+- **Keep software updated**: Update NativeLink to receive security patches
+- **Use separate CAs**: Different Certificate Authorities for workers vs clients
+- **Implement CRLs**: Have a process for revoking compromised certificates
+
+## Troubleshooting
+
+### Server fails to start
+
+**Error: "Could not open cert file"**
+
+```bash
+# Check file exists and permissions
+ls -la /path/to/server-cert.pem
+
+# Ensure NativeLink user can read the file
+sudo chown nativelink:nativelink /path/to/server-cert.pem
+chmod 644 /path/to/server-cert.pem
+```
+
+**Error: "Could not extract key(s) from file"**
+
+```bash
+# Verify the key file format
+openssl rsa -in /path/to/server-key.pem -check
+
+# If encrypted, decrypt it
+openssl rsa -in encrypted-key.pem -out server-key.pem
+```
+
+**Error: "Expected 1 key in file"**
+
+Ensure the key file contains exactly one private key. Remove any extra keys or certificates.
+
+### Client connection failures
+
+**Error: "Unable to determine authority of endpoint"**
+
+Verify the endpoint URI includes the hostname:
+
+```json5
+// Incorrect:
+{ "address": "grpcs://:50051" }
+
+// Correct:
+{ "address": "grpcs://scheduler.example.com:50051" }
+```
+
+**Error: "TLS configuration provided but scheme is not https or grpcs"**
+
+Change the URI scheme from `grpc://` to `grpcs://`:
+
+```json5
+{
+  address: "grpcs://server.example.com:50051",  // Not grpc://
+  tls_config: { ca_file: "/path/to/ca.pem" }
+}
+```
+
+**Error: "CA certificate must be provided if not using native root certificates"**
+
+Either provide a `ca_file` or enable `use_native_roots`:
+
+```json5
+// Option 1: Provide CA file
+{ tls_config: { ca_file: "/path/to/ca.pem" } }
+
+// Option 2: Use system roots
+{ tls_config: { use_native_roots: true } }
+```
+
+### Certificate verification errors
+
+**Error: "certificate has expired"**
+
+Check certificate validity:
+
+```bash
+openssl x509 -in /path/to/cert.pem -noout -dates
+```
+
+Renew expired certificates and redeploy.
+
+**Error: "certificate signed by unknown authority"**
+
+Ensure the CA certificate on the client matches the CA that signed the server certificate:
+
+```bash
+# View certificate issuer
+openssl x509 -in server-cert.pem -noout -issuer
+
+# View CA subject (should match server issuer)
+openssl x509 -in ca-cert.pem -noout -subject
+```
+
+**Error: "certificate is not valid for hostname"**
+
+The certificate's Common Name (CN) or Subject Alternative Name (SAN) must match the hostname in the URI:
+
+```bash
+# Check certificate CN and SAN
+openssl x509 -in cert.pem -noout -subject -ext subjectAltName
+```
+
+Either:
+- Generate a new certificate with the correct hostname
+- Use the hostname that matches the certificate
+
+### mTLS handshake failures
+
+**Error: "Client certificate required"**
+
+Ensure both `cert_file` and `key_file` are configured on the client:
+
+```json5
+{
+  tls_config: {
+    ca_file: "/path/to/ca.pem",
+    cert_file: "/path/to/client-cert.pem",
+    key_file: "/path/to/client-key.pem"
+  }
+}
+```
+
+**Error: "Could not read client CA"**
+
+Verify the `client_ca_file` is readable and in correct PEM format:
+
+```bash
+openssl x509 -in client-ca.pem -noout -text
+```
+
+## File Permissions Reference
+
+```bash
+# Server certificates (readable by NativeLink)
+chmod 644 server-cert.pem
+chmod 600 server-key.pem
+chown nativelink:nativelink server-*.pem
+
+# Client certificates (readable by NativeLink worker)
+chmod 644 client-cert.pem ca-cert.pem
+chmod 600 client-key.pem
+chown nativelink:nativelink client-*.pem ca-cert.pem
+
+# CA certificates (readable by all)
+chmod 644 ca.pem client-ca.pem
+```

@@ -1,0 +1,184 @@
+---
+title: Content Addressable Storage (CAS) service
+description: Store and retrieve blobs using content-addressed digests
+---
+
+The Content Addressable Storage (CAS) service implements the Remote Execution API v2 CAS interface for storing and retrieving blobs based on their content digest.
+
+## Overview
+
+The CAS service provides content-addressable blob storage where each blob is identified by its digest (hash). This enables efficient deduplication and content verification.
+
+**Key features:**
+- Content-addressed blob storage
+- Batch read and write operations
+- Missing blob detection
+- Directory tree traversal
+
+## Configuration
+
+<ParamField path="instance_name" type="string" required>
+  The instance name identifying this CAS endpoint. Must match client configuration.
+</ParamField>
+
+<ParamField path="cas_store" type="string" required>
+  Reference to the store configured in the `stores` section.
+</ParamField>
+
+```json5
+{
+  services: {
+    cas: [
+      {
+        instance_name: "main",
+        cas_store: "MAIN_CAS_STORE"
+      }
+    ]
+  }
+}
+```
+
+## gRPC Methods
+
+### FindMissingBlobs
+
+Determines which blobs are missing from the CAS.
+
+**Request:**
+
+<ParamField path="instance_name" type="string" required>
+  The instance name
+</ParamField>
+
+<ParamField path="blob_digests" type="Digest[]" required>
+  List of digests to check
+</ParamField>
+
+**Response:**
+
+<ResponseField name="missing_blob_digests" type="Digest[]">
+  List of digests that are not present in the CAS
+</ResponseField>
+
+**Example with grpcurl:**
+
+```bash
+grpcurl -plaintext \
+  -d '{
+    "instance_name": "main",
+    "blob_digests": [
+      {"hash": "abc123...", "size_bytes": 1024}
+    ]
+  }' \
+  localhost:50051 build.bazel.remote.execution.v2.ContentAddressableStorage/FindMissingBlobs
+```
+
+### BatchUpdateBlobs
+
+Upload multiple blobs in a single request.
+
+**Request:**
+
+<ParamField path="instance_name" type="string" required>
+  The instance name
+</ParamField>
+
+<ParamField path="requests" type="Request[]" required>
+  Array of upload requests, each containing:
+  - `digest`: Content digest
+  - `data`: Blob data (bytes)
+  - `compressor`: Optional compression (identity, zstd, deflate)
+</ParamField>
+
+**Response:**
+
+<ResponseField name="responses" type="Response[]">
+  Array of responses for each blob:
+  - `digest`: The blob digest
+  - `status`: gRPC status (OK on success)
+</ResponseField>
+
+<Note>Batch operations are limited by `max_decoding_message_size` (default 4MB)</Note>
+
+### BatchReadBlobs
+
+Download multiple blobs in a single request.
+
+**Request:**
+
+<ParamField path="instance_name" type="string" required>
+  The instance name
+</ParamField>
+
+<ParamField path="digests" type="Digest[]" required>
+  List of blob digests to read
+</ParamField>
+
+<ParamField path="acceptable_compressors" type="Compressor[]">
+  List of acceptable compression algorithms (identity, zstd, deflate)
+</ParamField>
+
+**Response:**
+
+<ResponseField name="responses" type="Response[]">
+  Array of responses for each blob:
+  - `digest`: The blob digest
+  - `data`: Blob data (bytes)
+  - `compressor`: Compression used
+  - `status`: gRPC status
+</ResponseField>
+
+### GetTree
+
+Recursively fetch a directory tree.
+
+**Request:**
+
+<ParamField path="instance_name" type="string" required>
+  The instance name
+</ParamField>
+
+<ParamField path="root_digest" type="Digest" required>
+  Digest of the root Directory message
+</ParamField>
+
+<ParamField path="page_size" type="int32">
+  Maximum number of directories per response (default: all)
+</ParamField>
+
+<ParamField path="page_token" type="string">
+  Token for pagination
+</ParamField>
+
+**Response (stream):**
+
+<ResponseField name="directories" type="Directory[]">
+  List of Directory messages
+</ResponseField>
+
+<ResponseField name="next_page_token" type="string">
+  Token for fetching next page
+</ResponseField>
+
+## Error Codes
+
+| Code | Description |
+|------|-------------|
+| `NOT_FOUND` | Blob or instance not found |
+| `INVALID_ARGUMENT` | Invalid digest format or instance name |
+| `RESOURCE_EXHAUSTED` | Request too large |
+| `INTERNAL` | Storage backend error |
+
+## Implementation Details
+
+From `nativelink-service/src/cas_server.rs`:
+
+```rust
+pub struct CasServer {
+    stores: HashMap<String, Store>,
+}
+```
+
+The CAS server maintains a map of instance names to store implementations, allowing multiple isolated CAS namespaces in a single deployment.
+
+<Info>The CAS service follows the [Remote Execution API v2 specification](https://github.com/bazelbuild/remote-apis/blob/main/build/bazel/remote/execution/v2/remote_execution.proto)</Info>
