@@ -1,0 +1,227 @@
+---
+title: Worker API service
+description: Connect workers to the scheduler for task execution
+---
+
+The Worker API service enables workers to connect to the scheduler, receive work, and report execution status.
+
+## Overview
+
+The Worker API provides:
+- Bidirectional gRPC streaming for worker-scheduler communication
+- Worker registration with platform properties
+- Task assignment and status updates
+- Keep-alive heartbeat mechanism
+- Graceful worker shutdown
+
+**Key features:**
+- Long-lived bidirectional streaming connection
+- Platform property-based worker matching
+- Automatic timeout detection
+- Action result reporting
+
+## Configuration
+
+<ParamField path="scheduler" type="string" required>
+  Reference to the scheduler that manages workers
+</ParamField>
+
+```json5
+{
+  services: {
+    worker_api: {
+      scheduler: "MAIN_SCHEDULER"
+    }
+  }
+}
+```
+
+## gRPC Methods
+
+### ConnectWorker
+
+Establish a bidirectional stream between worker and scheduler.
+
+**Request (stream):**
+
+Workers send `UpdateForScheduler` messages:
+
+<ParamField path="worker_id" type="string">
+  Unique worker identifier (generated if not provided)
+</ParamField>
+
+<ParamField path="platform_properties" type="PlatformProperties">
+  Worker capabilities (CPU, memory, OS, etc.)
+</ParamField>
+
+<ParamField path="keep_alive" type="KeepAliveRequest">
+  Heartbeat to indicate worker is alive
+</ParamField>
+
+<ParamField path="going_away" type="GoingAwayRequest">
+  Signal that worker is shutting down
+</ParamField>
+
+<ParamField path="execute_result" type="ExecuteResult">
+  Action execution result (exit code, outputs)
+</ParamField>
+
+**Response (stream):**
+
+Scheduler sends `UpdateForWorker` messages:
+
+<ResponseField name="update_timeout" type="Duration">
+  Time until next keep-alive expected
+</ResponseField>
+
+<ResponseField name="start_action" type="StartExecute">
+  Action to execute:
+  - `operation_id`: Unique operation identifier
+  - `action_digest`: Digest of the Action to execute
+  - `skip_cache_lookup`: Whether to skip AC lookup
+  - `platform_properties`: Required platform properties
+</ResponseField>
+
+## Connection Flow
+
+<Steps>
+  <Step title="Worker initiates connection">
+    Worker calls ConnectWorker and sends initial UpdateForScheduler with platform_properties
+  </Step>
+  
+  <Step title="Scheduler registers worker">
+    Scheduler validates properties and assigns worker_id if needed
+  </Step>
+  
+  <Step title="Task assignment">
+    Scheduler sends start_action when work is available
+  </Step>
+  
+  <Step title="Execution">
+    Worker executes action and sends execute_result
+  </Step>
+  
+  <Step title="Keep-alive">
+    Worker periodically sends keep_alive messages to prevent timeout
+  </Step>
+  
+  <Step title="Graceful shutdown">
+    Worker sends going_away before disconnecting
+  </Step>
+</Steps>
+
+## Worker Registration
+
+Workers register by sending their platform properties:
+
+```json
+{
+  "worker_id": "",  // Empty for new workers
+  "platform_properties": {
+    "properties": [
+      {"name": "OSFamily", "value": "Linux"},
+      {"name": "cpu_count", "value": "8"},
+      {"name": "memory_kb", "value": "16777216"},
+      {"name": "cpu_arch", "value": "x86_64"}
+    ]
+  }
+}
+```
+
+The scheduler responds with:
+
+```json
+{
+  "update_timeout": {"seconds": 30}
+}
+```
+
+<Note>Workers must send keep-alive messages within the update_timeout period</Note>
+
+## Execution Results
+
+Workers report results via execute_result:
+
+```json
+{
+  "execute_result": {
+    "operation_id": "abc123...",
+    "result": {
+      "exit_code": 0,
+      "stdout_digest": {"hash": "...", "size_bytes": 1024},
+      "output_files": [
+        {
+          "path": "out/binary",
+          "digest": {"hash": "...", "size_bytes": 2048}
+        }
+      ]
+    }
+  }
+}
+```
+
+## Worker Timeout
+
+Workers that fail to send updates within the timeout period are:
+1. Marked as timed out
+2. Removed from the available worker pool
+3. Any assigned actions are rescheduled
+
+<Warning>Configure timeouts appropriately - too short causes unnecessary reconnections, too long delays failure detection</Warning>
+
+## Configuration Example
+
+Complete worker configuration:
+
+```json5
+{
+  workers: [
+    {
+      local: {
+        worker_api_endpoint: {
+          uri: "grpc://scheduler:50061"
+        },
+        platform_properties: {
+          cpu_count: {values: ["8"]},
+          memory_kb: {values: ["16777216"]},
+          OSFamily: {values: ["Linux"]}
+        }
+      }
+    }
+  ]
+}
+```
+
+## Monitoring
+
+Key metrics to monitor:
+- Active worker count
+- Worker connection duration
+- Task assignment rate
+- Worker timeout rate
+- Average execution time
+
+## Error Codes
+
+| Code | Description |
+|------|-------------|
+| `INVALID_ARGUMENT` | Invalid worker_id or platform properties |
+| `NOT_FOUND` | Scheduler not configured |
+| `DEADLINE_EXCEEDED` | Worker timed out |
+| `CANCELLED` | Connection closed |
+
+## Implementation Details
+
+From `nativelink-service/src/worker_api_server.rs`:
+
+```rust
+pub struct WorkerApiServer {
+    scheduler: Arc<dyn WorkerScheduler>,
+    now_fn: Arc<NowFn>,
+    node_id: [u8; 6],
+}
+```
+
+The Worker API server maintains a reference to the scheduler and automatically removes timed-out workers every second.
+
+<Info>Workers use a custom NativeLink protocol over gRPC, not the standard Remote Execution API</Info>

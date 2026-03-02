@@ -1,0 +1,279 @@
+---
+title: Health Check service
+description: Monitor service health and component status
+---
+
+The Health Check service provides HTTP endpoints for monitoring NativeLink's operational status.
+
+## Overview
+
+The Health service:
+- Exposes HTTP endpoint for health checks
+- Reports status of all registered components
+- Returns JSON status for each subsystem
+- Supports custom timeout configuration
+
+**Key features:**
+- Non-gRPC HTTP endpoint (easy integration with load balancers)
+- Component-level health reporting
+- Configurable timeouts
+- Service-unavailable status on failures
+
+## Configuration
+
+<ParamField path="path" type="string" default="/status">
+  HTTP path for health check endpoint
+</ParamField>
+
+<ParamField path="timeout_seconds" type="uint64" default={5}>
+  Timeout for health check queries
+</ParamField>
+
+```json5
+{
+  services: {
+    health: {
+      path: "/status",  // Default: /status
+      timeout_seconds: 5
+    }
+  }
+}
+```
+
+<Note>The default path is `/status` as documented in the source code</Note>
+
+## HTTP Endpoint
+
+### GET /status
+
+Query health status of all components.
+
+**Response:**
+
+<ResponseField name="status" type="int">
+  HTTP status code:
+  - `200 OK`: All components healthy
+  - `503 SERVICE_UNAVAILABLE`: One or more components failed
+</ResponseField>
+
+<ResponseField name="body" type="JSON">
+  Array of component health descriptions
+</ResponseField>
+
+**Example response (healthy):**
+
+```json
+[
+  {
+    "namespace": "nativelink",
+    "component": "stores/MAIN_CAS",
+    "status": {
+      "Ok": {
+        "message": "Store operational"
+      }
+    }
+  },
+  {
+    "namespace": "nativelink",
+    "component": "scheduler/MAIN_SCHEDULER",
+    "status": {
+      "Ok": {
+        "message": "Scheduler running"
+      }
+    }
+  }
+]
+```
+
+**Example response (unhealthy):**
+
+```json
+[
+  {
+    "namespace": "nativelink",
+    "component": "stores/S3_STORE",
+    "status": {
+      "Failed": {
+        "message": "Connection timeout",
+        "error": "Failed to connect to S3"
+      }
+    }
+  }
+]
+```
+
+## Health Status Types
+
+Components can report these statuses:
+
+<Tabs>
+  <Tab title="Ok">
+    Component is healthy and operational
+    
+    ```json
+    {"Ok": {"message": "Service running"}}
+    ```
+  </Tab>
+  
+  <Tab title="Failed">
+    Component has failed
+    
+    ```json
+    {
+      "Failed": {
+        "message": "Database unreachable",
+        "error": "Connection refused"
+      }
+    }
+    ```
+  </Tab>
+  
+  <Tab title="Timeout">
+    Health check exceeded timeout
+    
+    ```json
+    {
+      "Timeout": {
+        "duration_seconds": 5.2
+      }
+    }
+    ```
+  </Tab>
+</Tabs>
+
+## Registered Components
+
+NativeLink automatically registers health checks for:
+
+- **Stores**: All configured stores (CAS, AC, etc.)
+- **Schedulers**: Task schedulers
+- **Workers**: Local workers (if configured)
+- **Backend connections**: S3, Redis, database connections
+
+<Info>Components are registered during service initialization based on your configuration</Info>
+
+## Kubernetes Integration
+
+Use the health endpoint for liveness and readiness probes:
+
+```yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  name: nativelink
+spec:
+  containers:
+  - name: nativelink
+    image: ghcr.io/tracemachina/nativelink:latest
+    livenessProbe:
+      httpGet:
+        path: /status
+        port: 50051
+      initialDelaySeconds: 10
+      periodSeconds: 30
+    readinessProbe:
+      httpGet:
+        path: /status
+        port: 50051
+      initialDelaySeconds: 5
+      periodSeconds: 10
+```
+
+## Load Balancer Integration
+
+Configure health checks in your load balancer:
+
+**AWS ALB:**
+```yaml
+HealthCheckPath: /status
+HealthCheckIntervalSeconds: 30
+HealthCheckTimeoutSeconds: 5
+HealthyThresholdCount: 2
+UnhealthyThresholdCount: 3
+```
+
+**nginx:**
+```nginx
+upstream nativelink {
+    server nativelink1:50051 max_fails=3 fail_timeout=30s;
+    server nativelink2:50051 max_fails=3 fail_timeout=30s;
+}
+
+server {
+    location /status {
+        proxy_pass http://nativelink/status;
+        proxy_connect_timeout 5s;
+    }
+}
+```
+
+## Timeout Configuration
+
+The `timeout_seconds` setting controls how long to wait for each component:
+
+```json5
+{
+  services: {
+    health: {
+      timeout_seconds: 10  // Increase for slower backends
+    }
+  }
+}
+```
+
+<Warning>Components that exceed the timeout are marked as `Timeout` status and contribute to a 503 response</Warning>
+
+## Monitoring Best Practices
+
+<Steps>
+  <Step title="Set appropriate timeouts">
+    Configure timeout_seconds based on your slowest backend (S3, database, etc.)
+  </Step>
+  
+  <Step title="Monitor health check latency">
+    Track how long health checks take - increases indicate problems
+  </Step>
+  
+  <Step title="Alert on 503 responses">
+    Set up alerts when the health endpoint returns SERVICE_UNAVAILABLE
+  </Step>
+  
+  <Step title="Review component failures">
+    Parse the JSON response to identify which specific component failed
+  </Step>
+</Steps>
+
+## Custom Health Path
+
+Change the health check path if it conflicts with other endpoints:
+
+```json5
+{
+  services: {
+    health: {
+      path: "/health/check"  // Custom path
+    }
+  }
+}
+```
+
+## Implementation Details
+
+From `nativelink-service/src/health_server.rs`:
+
+```rust
+pub struct HealthServer {
+    health_registry: HealthRegistry,
+    timeout: Duration,
+}
+```
+
+The health server queries all registered components in parallel and aggregates their status.
+
+## Error Handling
+
+- **200 OK**: All components healthy or no components registered
+- **503 SERVICE_UNAVAILABLE**: One or more components failed or timed out
+- **500 INTERNAL_SERVER_ERROR**: Failed to serialize health status (rare)
+
+<Tip>Use the health endpoint in your CI/CD pipeline to verify deployments before routing traffic</Tip>
